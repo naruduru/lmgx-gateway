@@ -43,6 +43,64 @@ public class NotificationService {
 }
 ```
 
+## 외부 패키지 사용 예시
+
+```java
+package com.example.orders;
+
+import com.lmgx.gateway.connection.IncomingCommandHandler;
+import com.lmgx.gateway.connection.MessageSender;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class OrderCmdHandler implements IncomingCommandHandler {
+  @Override
+  public List<String> cmds() {
+    return List.of("ORDER_CREATED", "ORDER_PAID");
+  }
+
+  @Override
+  public void handle(MessageSender.Channel channel, Map<String, Object> message) {
+    if (channel == MessageSender.Channel.CHAT) {
+      // 주문 채팅 처리
+    } else {
+      // 주문 이메일 처리
+    }
+  }
+}
+```
+
+## 수신 cmd 핸들러 예시 (멀티 cmd)
+
+```java
+import com.lmgx.gateway.connection.IncomingCommandHandler;
+import com.lmgx.gateway.connection.MessageSender;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class CmdGroupHandler implements IncomingCommandHandler {
+  @Override
+  public List<String> cmds() {
+    return List.of("999", "998", "997");
+  }
+
+  @Override
+  public void handle(MessageSender.Channel channel, Map<String, Object> message) {
+    if (channel == MessageSender.Channel.CHAT) {
+      // chat 처리
+    } else {
+      // email 처리
+    }
+  }
+}
+```
+
 ```java
 import com.lmgx.gateway.connection.MessageSender;
 import org.springframework.web.bind.annotation.PostMapping;

@@ -25,6 +25,7 @@ public class GatewayWsClient {
   private final ObjectMapper om = new ObjectMapper();
   private final StandardWebSocketClient client = new StandardWebSocketClient();
   private final AckRegistry ack = new AckRegistry();
+  private final IncomingMessageDispatcher dispatcher;
   private final ExecutorService connector = Executors.newSingleThreadExecutor(r -> {
     Thread t = new Thread(r, "gw-ws-connector");
     t.setDaemon(true);
@@ -44,6 +45,10 @@ public class GatewayWsClient {
   private static final long ACK_TIMEOUT_MS = 1000;
   private static final long PING_STALE_MS = 5000;
   private static final int PING_FAIL_THRESHOLD = 3;
+
+  public GatewayWsClient(IncomingMessageDispatcher dispatcher) {
+    this.dispatcher = dispatcher;
+  }
 
   public void connect(String wsUrl) {
     connectInternal(wsUrl, false);
@@ -182,6 +187,7 @@ public class GatewayWsClient {
   private WebSocketSession open(String url, String type) {
     CompletableFuture<Void> initDone = new CompletableFuture<>();
     AtomicReference<String> initAckRef = new AtomicReference<>();
+    MessageSender.Channel channel = "I".equals(type) ? MessageSender.Channel.EMAIL : MessageSender.Channel.CHAT;
 
     WebSocketHandler h = new TextWebSocketHandler() {
       @Override
@@ -210,6 +216,16 @@ public class GatewayWsClient {
             if (ackId.equals(initAckRef.get())) {
               initDone.complete(null);
             }
+          }
+          return;
+        }
+
+        if (dispatcher != null) {
+          try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> msg = om.readValue(p, Map.class);
+            dispatcher.dispatch(channel, msg);
+          } catch (Exception ignore) {
           }
         }
       }

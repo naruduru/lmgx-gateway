@@ -11,8 +11,8 @@ import org.springframework.context.annotation.Configuration;
 public class GatewayBeans {
 
   @Bean
-  public GatewayWsClient gatewayWsClient() {
-    return new GatewayWsClient();
+  public GatewayWsClient gatewayWsClient(com.lmgx.gateway.connection.IncomingMessageDispatcher dispatcher) {
+    return new GatewayWsClient(dispatcher);
   }
 
   @Bean
