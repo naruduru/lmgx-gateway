@@ -1,0 +1,44 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.2'
+    id 'io.spring.dependency-management' version '1.1.6'
+}
+
+group = 'com.lmgx'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-websocket'
+    implementation 'org.mybatis.spring.boot:mybatis-spring-boot-starter:3.0.3'
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'com.lmgx.core.ui:lmgx-core:0.1.0-SNAPSHOT'
+    implementation 'com.lmgx.core.ui:lmgx-core-spring:0.1.0-SNAPSHOT'
+    runtimeOnly 'org.postgresql:postgresql:42.7.3'
+
+    // Oracle JDBC driver is often not available on Maven Central in corporate environments.
+    // Add it per your policy, e.g.:
+    // runtimeOnly files('libs/ojdbc11.jar')
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+tasks.register('printRuntimeClasspath') {
+    doLast {
+        println sourceSets.main.runtimeClasspath.asPath
+    }
+}

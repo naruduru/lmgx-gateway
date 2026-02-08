@@ -1,0 +1,2 @@
+rootProject.name = 'lmgx-gateway'
+includeBuild('/Users/mingulee/vscode/lmgx-core')

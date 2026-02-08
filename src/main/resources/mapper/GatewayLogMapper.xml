@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+  PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.lmgx.gateway.persist.GatewayLogMapper">
+
+  <insert id="insertTargetHealth">
+    INSERT INTO GW_TARGET_HEALTH
+    (SERVER_GROUP, TARGET_ID, TARGET_URL, CHECK_KIND, IS_UP, LATENCY_MS, FAIL_REASON, DETAIL_MSG)
+    VALUES
+    (#{serverGroup}, #{targetId}, #{targetUrl}, #{checkKind}, #{isUp}, #{latencyMs}, #{failReason}, #{detailMsg})
+  </insert>
+
+  <insert id="insertFailoverEvent">
+    INSERT INTO GW_FAILOVER_EVENT
+    (SERVER_GROUP, FROM_TARGET, TO_TARGET, FROM_URL, TO_URL, EVENT_KIND, TRIGGER_REASON, FAIL_COUNT, RECOVER_STABLE)
+    VALUES
+    (#{serverGroup}, #{fromTarget}, #{toTarget}, #{fromUrl}, #{toUrl}, #{eventKind}, #{triggerReason}, #{failCount}, #{recoverStable})
+  </insert>
+
+  <select id="selectRecentHealth" parameterType="int" resultType="com.lmgx.gateway.persist.TargetHealthLog">
+    SELECT
+      CREATED_AT as createdAt,
+      SERVER_GROUP as serverGroup,
+      TARGET_ID as targetId,
+      TARGET_URL as targetUrl,
+      CHECK_KIND as checkKind,
+      IS_UP as isUp,
+      LATENCY_MS as latencyMs,
+      FAIL_REASON as failReason,
+      DETAIL_MSG as detailMsg
+    FROM GW_TARGET_HEALTH
+    ORDER BY CREATED_AT DESC
+    LIMIT #{param1}
+  </select>
+
+  <select id="selectRecentEvents" parameterType="int" resultType="com.lmgx.gateway.persist.FailoverEventLog">
+    SELECT
+      CREATED_AT as createdAt,
+      SERVER_GROUP as serverGroup,
+      FROM_TARGET as fromTarget,
+      TO_TARGET as toTarget,
+      FROM_URL as fromUrl,
+      TO_URL as toUrl,
+      EVENT_KIND as eventKind,
+      TRIGGER_REASON as triggerReason,
+      FAIL_COUNT as failCount,
+      RECOVER_STABLE as recoverStable
+    FROM GW_FAILOVER_EVENT
+    ORDER BY CREATED_AT DESC
+    LIMIT #{param1}
+  </select>
+
+  <insert id="upsertInstanceStatus" parameterType="com.lmgx.gateway.persist.InstanceStatus">
+    INSERT INTO GW_INSTANCE_STATUS
+    (INSTANCE_ID, GROUP_ID, SERVER_PORT, ACTIVE_URL, ACTIVE_TARGET, CHAT_OPEN, EMAIL_OPEN, READY, UPDATED_AT)
+    VALUES
+    (#{instanceId}, #{groupId}, #{serverPort}, #{activeUrl}, #{activeTarget}, #{chatOpen}, #{emailOpen}, #{ready}, NOW())
+    ON CONFLICT (INSTANCE_ID)
+    DO UPDATE SET
+      GROUP_ID = EXCLUDED.GROUP_ID,
+      SERVER_PORT = EXCLUDED.SERVER_PORT,
+      ACTIVE_URL = EXCLUDED.ACTIVE_URL,
+      ACTIVE_TARGET = EXCLUDED.ACTIVE_TARGET,
+      CHAT_OPEN = EXCLUDED.CHAT_OPEN,
+      EMAIL_OPEN = EXCLUDED.EMAIL_OPEN,
+      READY = EXCLUDED.READY,
+      UPDATED_AT = NOW()
+  </insert>
+
+  <select id="selectInstanceStatus" resultType="com.lmgx.gateway.persist.InstanceStatus">
+    SELECT
+      INSTANCE_ID as instanceId,
+      GROUP_ID as groupId,
+      SERVER_PORT as serverPort,
+      ACTIVE_URL as activeUrl,
+      ACTIVE_TARGET as activeTarget,
+      CHAT_OPEN as chatOpen,
+      EMAIL_OPEN as emailOpen,
+      READY as ready,
+      UPDATED_AT as updatedAt
+    FROM GW_INSTANCE_STATUS
+    ORDER BY INSTANCE_ID
+  </select>
+
+</mapper>
