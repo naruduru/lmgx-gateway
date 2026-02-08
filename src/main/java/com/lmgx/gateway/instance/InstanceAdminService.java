@@ -1,6 +1,6 @@
-package com.lmgx.gateway.api;
+package com.lmgx.gateway.instance;
 
-import com.lmgx.gateway.monitor.InstanceControlStore;
+import com.lmgx.gateway.instance.InstanceControlStore;
 import com.lmgx.gateway.persist.GatewayLogMapper;
 import com.lmgx.gateway.persist.InstanceStatus;
 import org.springframework.core.env.Environment;

@@ -1,9 +1,9 @@
 package com.lmgx.gateway.config;
 
-import com.lmgx.gateway.monitor.InstanceControlStore;
-import com.lmgx.gateway.ws.GatewayWsClient;
-import com.lmgx.gateway.ws.ProbeWsClient;
-import com.lmgx.gateway.ws.TargetToggleStore;
+import com.lmgx.gateway.instance.InstanceControlStore;
+import com.lmgx.gateway.connection.GatewayWsClient;
+import com.lmgx.gateway.connection.ProbeWsClient;
+import com.lmgx.gateway.target.TargetToggleStore;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 

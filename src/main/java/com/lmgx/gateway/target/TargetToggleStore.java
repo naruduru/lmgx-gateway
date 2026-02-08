@@ -1,4 +1,4 @@
-package com.lmgx.gateway.ws;
+package com.lmgx.gateway.target;
 
 import java.util.concurrent.ConcurrentHashMap;
 

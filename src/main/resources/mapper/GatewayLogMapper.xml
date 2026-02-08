@@ -4,6 +4,7 @@
   "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 
 <mapper namespace="com.lmgx.gateway.persist.GatewayLogMapper">
+  <!-- DB integration note: replace this mapper with your site's persistence if needed. -->
 
   <insert id="insertTargetHealth">
     INSERT INTO GW_TARGET_HEALTH

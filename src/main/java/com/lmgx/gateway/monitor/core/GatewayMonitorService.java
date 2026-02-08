@@ -1,14 +1,14 @@
-package com.lmgx.gateway.monitor;
+package com.lmgx.gateway.monitor.core;
 
-import com.lmgx.gateway.api.TargetAdminService;
-import com.lmgx.gateway.failover.FailoverLoop;
+import com.lmgx.gateway.target.TargetAdminService;
+import com.lmgx.gateway.connection.FailoverLoop;
 import com.lmgx.gateway.persist.FailoverEventLog;
 import com.lmgx.gateway.persist.GatewayLogMapper;
 import com.lmgx.gateway.persist.InstanceStatus;
 import com.lmgx.gateway.persist.TargetHealthLog;
-import com.lmgx.gateway.ws.GatewayWsClient;
-import com.lmgx.gateway.ws.ProbeWsClient;
-import com.lmgx.gateway.ws.TargetToggleStore;
+import com.lmgx.gateway.connection.GatewayWsClient;
+import com.lmgx.gateway.connection.ProbeWsClient;
+import com.lmgx.gateway.target.TargetToggleStore;
 import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -31,6 +31,7 @@ public class GatewayMonitorService {
     private final GatewayWsClient ws;
     private final FailoverLoop failover;
     private final GatewayLogMapper logMapper;
+    // DB integration note: logMapper can be replaced per site (optional monitoring storage).
     private final ProbeWsClient probe;
     private final Map<String, Boolean> serverUpCache = new ConcurrentHashMap<>();
     private final Map<String, Boolean> ackCache = new ConcurrentHashMap<>();
@@ -236,6 +237,7 @@ public class GatewayMonitorService {
 
     @Scheduled(fixedDelay = 1000)
     public void refreshLogCache() {
+        // DB integration note: replace log reads with site-specific storage if needed.
         if (logMapper == null) {
             return;
         }
@@ -253,6 +255,7 @@ public class GatewayMonitorService {
 
     @Scheduled(fixedDelay = 1000)
     public void refreshInstanceCache() {
+        // DB integration note: replace instance status reads with site-specific storage if needed.
         if (logMapper == null) {
             return;
         }

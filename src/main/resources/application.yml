@@ -37,6 +37,7 @@ logging:
 
 spring:
   datasource:
+    # DB integration note: replace with site-specific DB settings or disable DB usage.
     url: jdbc:postgresql://localhost:5432/lmgx_gateway
     username: naruduru
     password: ca102030!!

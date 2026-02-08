@@ -1,6 +1,6 @@
-package com.lmgx.gateway.api;
+package com.lmgx.gateway.target;
 
-import com.lmgx.gateway.ws.TargetToggleStore;
+import com.lmgx.gateway.target.TargetToggleStore;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;

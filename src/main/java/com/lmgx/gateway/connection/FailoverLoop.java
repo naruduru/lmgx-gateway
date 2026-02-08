@@ -1,11 +1,11 @@
-package com.lmgx.gateway.failover;
+package com.lmgx.gateway.connection;
 
-import com.lmgx.gateway.monitor.InstanceControlStore;
+import com.lmgx.gateway.instance.InstanceControlStore;
 import com.lmgx.gateway.persist.FailoverEventLog;
 import com.lmgx.gateway.persist.GatewayLogMapper;
 import com.lmgx.gateway.persist.TargetHealthLog;
-import com.lmgx.gateway.ws.GatewayWsClient;
-import com.lmgx.gateway.ws.ProbeWsClient;
+import com.lmgx.gateway.connection.GatewayWsClient;
+import com.lmgx.gateway.connection.ProbeWsClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -22,6 +22,7 @@ public class FailoverLoop {
   private final GatewayWsClient ws;
   private final ProbeWsClient probe;
   private final GatewayLogMapper logMapper;
+  // DB integration note: logMapper can be swapped per site (optional logging).
   private final InstanceControlStore controlStore;
 
   private final String A1;
@@ -329,10 +330,12 @@ public class FailoverLoop {
   }
 
   private void safeInsertHealth(TargetHealthLog log) {
+    // DB integration note: replace with site-specific persistence if needed.
     try { logMapper.insertTargetHealth(log); } catch (Exception ignore) {}
   }
 
   private void safeInsertEvent(FailoverEventLog log) {
+    // DB integration note: replace with site-specific persistence if needed.
     try { logMapper.insertFailoverEvent(log); } catch (Exception ignore) {}
   }
 }

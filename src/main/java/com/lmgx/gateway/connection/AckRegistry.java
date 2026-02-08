@@ -1,4 +1,4 @@
-package com.lmgx.gateway.ws;
+package com.lmgx.gateway.connection;
 
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;

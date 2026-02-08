@@ -1,9 +1,9 @@
-package com.lmgx.gateway.monitor;
+package com.lmgx.gateway.instance;
 
-import com.lmgx.gateway.failover.FailoverLoop;
+import com.lmgx.gateway.connection.FailoverLoop;
 import com.lmgx.gateway.persist.GatewayLogMapper;
 import com.lmgx.gateway.persist.InstanceStatus;
-import com.lmgx.gateway.ws.GatewayWsClient;
+import com.lmgx.gateway.connection.GatewayWsClient;
 import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -27,6 +27,7 @@ public class GatewayInstanceStatusReporter {
 
     @Scheduled(fixedDelay = 2000)
     public void report() {
+        // DB integration note: replace instance status persistence per site if needed.
         if (logMapper == null) {
             return;
         }

@@ -1,4 +1,4 @@
-package com.lmgx.gateway.monitor;
+package com.lmgx.gateway.monitor.lmgx;
 
 import com.lmgx.core.ui.component.Badge;
 import com.lmgx.core.ui.component.Button;
@@ -15,6 +15,7 @@ import com.lmgx.core.ui.layout.Grid;
 import com.lmgx.core.ui.layout.Page;
 import com.lmgx.core.ui.layout.Row;
 import com.lmgx.core.ui.layout.Span;
+import com.lmgx.gateway.monitor.core.GatewayMonitorService;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;

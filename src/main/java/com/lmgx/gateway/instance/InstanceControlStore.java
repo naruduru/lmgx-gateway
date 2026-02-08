@@ -1,4 +1,4 @@
-package com.lmgx.gateway.monitor;
+package com.lmgx.gateway.instance;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 

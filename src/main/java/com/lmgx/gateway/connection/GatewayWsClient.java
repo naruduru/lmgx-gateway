@@ -1,4 +1,4 @@
-package com.lmgx.gateway.ws;
+package com.lmgx.gateway.connection;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.web.socket.TextMessage;

@@ -1,4 +1,4 @@
-package com.lmgx.gateway.monitor;
+package com.lmgx.gateway.monitor.lmgx;
 
 import com.lmgx.core.ui.component.UiComponent;
 import org.springframework.http.MediaType;

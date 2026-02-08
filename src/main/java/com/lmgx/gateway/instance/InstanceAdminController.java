@@ -1,4 +1,4 @@
-package com.lmgx.gateway.api;
+package com.lmgx.gateway.instance;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;

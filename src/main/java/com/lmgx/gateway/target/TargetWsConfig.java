@@ -1,4 +1,4 @@
-package com.lmgx.gateway.ws;
+package com.lmgx.gateway.target;
 
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.TextMessage;

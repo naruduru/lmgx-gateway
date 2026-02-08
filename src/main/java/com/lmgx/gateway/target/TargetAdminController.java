@@ -1,4 +1,4 @@
-package com.lmgx.gateway.api;
+package com.lmgx.gateway.target;
 
 import org.springframework.web.bind.annotation.*;
 

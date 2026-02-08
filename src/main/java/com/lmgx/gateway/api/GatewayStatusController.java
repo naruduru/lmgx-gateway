@@ -1,7 +1,7 @@
 package com.lmgx.gateway.api;
 
-import com.lmgx.gateway.failover.FailoverLoop;
-import com.lmgx.gateway.ws.GatewayWsClient;
+import com.lmgx.gateway.connection.FailoverLoop;
+import com.lmgx.gateway.connection.GatewayWsClient;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
