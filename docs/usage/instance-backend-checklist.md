@@ -13,6 +13,9 @@ UI는 제외합니다.
 - 메시지 전송
   - `src/main/java/com/lmgx/gateway/connection/MessageSender.java`
   - `src/main/java/com/lmgx/gateway/connection/GatewayMessageSender.java`
+- 수신 메시지 처리
+  - `src/main/java/com/lmgx/gateway/connection/IncomingCommandHandler.java`
+  - `src/main/java/com/lmgx/gateway/connection/IncomingMessageDispatcher.java`
 - 인스턴스 제어(선택)
   - `src/main/java/com/lmgx/gateway/instance/InstanceControlStore.java`
   - `src/main/java/com/lmgx/gateway/instance/InstanceAdminController.java`
