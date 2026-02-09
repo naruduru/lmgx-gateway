@@ -1,0 +1,16 @@
+gateway:
+  instance:
+    id: ${GATEWAY_INSTANCE_ID:WA1}
+  # dev: WA1 + A1 or WA1/WE1 + A1/E1
+  targets:
+    A1: ws://127.0.0.1:6701/clientws/A1
+    E1: ws://127.0.0.1:6703/clientws/E1
+  ring:
+    G1: A1,E1
+    G2: E1,A1
+  recover:
+    G1: A1
+    G2: E1
+  prefer:
+    G1: A1
+    G2: E1

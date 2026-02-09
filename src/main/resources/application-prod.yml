@@ -1,0 +1,18 @@
+gateway:
+  instance:
+    id: ${GATEWAY_INSTANCE_ID:WA1}
+  # prod: WA1/WA2/WE1/WE2 + A1/A2/E1/E2
+  targets:
+    A1: ws://127.0.0.1:6701/clientws/A1
+    A2: ws://127.0.0.1:6702/clientws/A2
+    E1: ws://127.0.0.1:6703/clientws/E1
+    E2: ws://127.0.0.1:6704/clientws/E2
+  ring:
+    G1: A1,A2,E1,E2
+    G2: E1,E2,A1,A2
+  recover:
+    G1: A1,A2
+    G2: E1,E2
+  prefer:
+    G1: A1,A2
+    G2: E1,E2
