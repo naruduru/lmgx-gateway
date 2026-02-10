@@ -1,29 +1,31 @@
 package com.lmgx.gateway.connection;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GatewayWsClient {
 
   private static final Logger log = LoggerFactory.getLogger(GatewayWsClient.class);
 
   private final ObjectMapper om = new ObjectMapper();
-  private final StandardWebSocketClient client = new StandardWebSocketClient();
+  private final StandardWebSocketClient client;
   private final AckRegistry ack = new AckRegistry();
   private final IncomingMessageDispatcher dispatcher;
   private final ExecutorService connector = Executors.newSingleThreadExecutor(r -> {
@@ -33,6 +35,7 @@ public class GatewayWsClient {
   });
   private final AtomicBoolean connecting = new AtomicBoolean(false);
   private final AtomicInteger connectFailures = new AtomicInteger(0);
+  private final AtomicReference<CompletableFuture<Void>> pendingHeartbeat = new AtomicReference<>();
   private volatile long nextConnectAllowedAt = 0L;
 
   private volatile WebSocketSession chat;   // type C
@@ -42,12 +45,19 @@ public class GatewayWsClient {
   private volatile long lastPingAt = 0L;
   private final AtomicInteger pingFailures = new AtomicInteger(0);
 
-  private static final long ACK_TIMEOUT_MS = 1000;
   private static final long PING_STALE_MS = 5000;
   private static final int PING_FAIL_THRESHOLD = 3;
+  private static final int DEFAULT_HB_PERIOD_SEC = 10;
+  private static final int DEFAULT_HA_STATE = 1;
 
-  public GatewayWsClient(IncomingMessageDispatcher dispatcher) {
+  private volatile int hbPeriodSec = DEFAULT_HB_PERIOD_SEC;
+  private volatile int haState = DEFAULT_HA_STATE;
+  private final long ackTimeoutMs;
+
+  public GatewayWsClient(IncomingMessageDispatcher dispatcher, StandardWebSocketClient client, long ackTimeoutMs) {
     this.dispatcher = dispatcher;
+    this.client = Objects.requireNonNull(client, "StandardWebSocketClient must not be null");
+    this.ackTimeoutMs = Math.max(1, ackTimeoutMs);
   }
 
   public void connect(String wsUrl) {
@@ -78,6 +88,7 @@ public class GatewayWsClient {
       synchronized (this) {
         closeQuiet(chat);
         closeQuiet(email);
+        pendingHeartbeat.set(null);
         try {
           log.info("connect: {}", wsUrl);
           chat = open(wsUrl, "C");
@@ -90,7 +101,7 @@ public class GatewayWsClient {
           int failures = connectFailures.incrementAndGet();
           long backoff = calcBackoffMs(failures);
           nextConnectAllowedAt = System.currentTimeMillis() + backoff;
-          log.warn("connect failed: {}", e.getMessage());
+          log.warn("connect failed: {}", describe(e), e);
         } finally {
           connecting.set(false);
         }
@@ -122,6 +133,7 @@ public class GatewayWsClient {
     closeQuiet(email);
     chat = null;
     email = null;
+    pendingHeartbeat.set(null);
   }
 
   public boolean pingChat() {
@@ -136,6 +148,11 @@ public class GatewayWsClient {
 
       String id = ack.newId("H");
       CompletableFuture<Void> f = ack.register(id);
+      CompletableFuture<Void> hb = new CompletableFuture<>();
+      if (!pendingHeartbeat.compareAndSet(null, hb)) {
+        log.debug("heartbeat already pending");
+        return false;
+      }
 
       synchronized (chat) {
         chat.sendMessage(new TextMessage(om.writeValueAsString(Map.of(
@@ -143,18 +160,33 @@ public class GatewayWsClient {
             "ackId", id
         ))));
       }
+      if (!sendJson(chat, Map.of(
+          "Command", 3,
+          "HaState", haState
+      ))) {
+        throw new IllegalStateException("session closed while sending heartbeat");
+      }
 
-      f.get(ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+      f.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
+      hb.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
       lastPingOk = true;
       lastPingAt = System.currentTimeMillis();
       pingFailures.set(0);
       return true;
+    } catch (TimeoutException e) {
+      log.warn("heartbeat timeout waiting command=4 after {}ms", ackTimeoutMs);
+      lastPingOk = false;
+      lastPingAt = System.currentTimeMillis();
+      pingFailures.incrementAndGet();
+      return false;
     } catch (Exception e) {
       log.debug("pingChat failed: {}", e.getMessage());
       lastPingOk = false;
       lastPingAt = System.currentTimeMillis();
       pingFailures.incrementAndGet();
       return false;
+    } finally {
+      pendingHeartbeat.set(null);
     }
   }
 
@@ -180,80 +212,158 @@ public class GatewayWsClient {
       ))));
     }
 
-    f.get(ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    try {
+      f.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
+    } catch (TimeoutException e) {
+      throw new TimeoutException("ACK timeout after " + ackTimeoutMs + "ms for cmd=" + cmd + ", ackId=" + id);
+    }
     return id;
   }
 
   private WebSocketSession open(String url, String type) {
     CompletableFuture<Void> initDone = new CompletableFuture<>();
-    AtomicReference<String> initAckRef = new AtomicReference<>();
     MessageSender.Channel channel = "I".equals(type) ? MessageSender.Channel.EMAIL : MessageSender.Channel.CHAT;
 
     WebSocketHandler h = new TextWebSocketHandler() {
       @Override
-      protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-        String p = message.getPayload();
+      protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        try {
+          String p = message.getPayload();
+          @SuppressWarnings("unchecked")
+          Map<String, Object> msg = om.readValue(p, Map.class);
 
-        if (p.contains("\"command\":1")) {
-          String initAckId = ack.newId("I");
-          initAckRef.set(initAckId);
-          ack.register(initAckId);
-
-          synchronized (session) {
-            session.sendMessage(new TextMessage(om.writeValueAsString(Map.of(
-                "command", 2,
-                "type", type,
-                "ackId", initAckId
-            ))));
-          }
-          return;
-        }
-
-        if (p.contains("\"command\":\"ACK\"") && p.contains("\"ackId\"")) {
-          String ackId = pick(p, "\"ackId\":\"", "\"");
-          if (ackId != null) {
-            ack.ack(ackId);
-            if (ackId.equals(initAckRef.get())) {
+          Object command = commandOf(msg);
+          if (isInitCommand(command)) {
+            try {
+              hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
+              haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
+              if (!sendJson(session, Map.of(
+                  "Command", 2,
+                  "HostKind", hostKindOf(type),
+                  "HBPeriod", hbPeriodSec,
+                  "HaState", haState,
+                  "ResultCode", 1
+              ))) {
+                throw new IllegalStateException("session closed while sending init response");
+              }
               initDone.complete(null);
+            } catch (Exception e) {
+              initDone.completeExceptionally(e);
             }
+            return;
           }
-          return;
-        }
 
-        if (dispatcher != null) {
-          try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> msg = om.readValue(p, Map.class);
-            dispatcher.dispatch(channel, msg);
-          } catch (Exception ignore) {
+          if (isHeartbeatAckCommand(command)) {
+            int ackHaState = readInt(msg, "HaState", haState);
+            Object nodeRole1 = msg.getOrDefault("NodeRole1", msg.get("nodeRole1"));
+            Object nodeRole2 = msg.getOrDefault("NodeRole2", msg.get("nodeRole2"));
+            log.debug("heartbeat ack: haState={}, nodeRole1={}, nodeRole2={}", ackHaState, nodeRole1, nodeRole2);
+            CompletableFuture<Void> hb = pendingHeartbeat.getAndSet(null);
+            if (hb != null && !hb.isDone()) {
+              hb.complete(null);
+            }
+            return;
           }
+
+          if (isAckCommand(command)) {
+            Object ackIdObj = msg.get("ackId");
+            String ackId = ackIdObj == null ? null : String.valueOf(ackIdObj);
+            if (ackId != null) {
+              ack.ack(ackId);
+            }
+            return;
+          }
+
+          if (dispatcher != null && msg.get("cmd") instanceof String) {
+            dispatcher.dispatch(channel, msg);
+          }
+        } catch (Exception e) {
+          log.debug("ws message handling error: {}", e.getMessage());
         }
       }
     };
 
     try {
       WebSocketSession session = client.execute(h, url).get(1, TimeUnit.SECONDS);
-      initDone.get(ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+      initDone.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
       log.debug("open ok: url={}, type={}", url, type);
       return session;
     } catch (Exception e) {
-      log.warn("open failed: url={}, type={}", url, type, e);
-      throw new RuntimeException("handshake/init fail: " + url + " type=" + type, e);
+      log.warn("open failed: url={}, type={}, cause={}", url, type, describe(e), e);
+      throw new RuntimeException("handshake/init fail: " + url + " type=" + type + " cause=" + describe(e), e);
     }
+  }
+
+  private boolean sendJson(WebSocketSession session, Map<String, Object> payload) {
+    if (session == null || !session.isOpen()) {
+      return false;
+    }
+    try {
+      synchronized (session) {
+        if (!session.isOpen()) {
+          return false;
+        }
+        session.sendMessage(new TextMessage(om.writeValueAsString(payload)));
+      }
+      return true;
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
+  private static int readInt(Map<String, Object> msg, String key, int defaultValue) {
+    Object v = msg.get(key);
+    if (v == null) {
+      String lower = Character.toLowerCase(key.charAt(0)) + key.substring(1);
+      v = msg.get(lower);
+    }
+    if (v == null) return defaultValue;
+    try {
+      if (v instanceof Number n) {
+        return n.intValue();
+      }
+      return Integer.parseInt(String.valueOf(v));
+    } catch (Exception e) {
+      return defaultValue;
+    }
+  }
+
+  private static Integer hostKindOf(String type) {
+    return "I".equals(type) ? 2 : 1;
+  }
+
+  private static Object commandOf(Map<String, Object> msg) {
+    Object c = msg.get("command");
+    return c != null ? c : msg.get("Command");
+  }
+
+  private static boolean isInitCommand(Object command) {
+    return Integer.valueOf(1).equals(command) || "1".equals(String.valueOf(command));
+  }
+
+  private static boolean isAckCommand(Object command) {
+    return "ACK".equals(String.valueOf(command));
+  }
+
+  private static boolean isHeartbeatAckCommand(Object command) {
+    return Integer.valueOf(4).equals(command) || "4".equals(String.valueOf(command));
+  }
+
+  private static String describe(Throwable t) {
+    Throwable cur = t;
+    while (cur.getCause() != null) {
+      cur = cur.getCause();
+    }
+    String msg = cur.getMessage();
+    if (msg == null || msg.isBlank()) {
+      return cur.getClass().getName();
+    }
+    return cur.getClass().getName() + ": " + msg;
   }
 
   private static void closeQuiet(WebSocketSession s) {
     if (s != null && s.isOpen()) {
       try { s.close(); } catch (Exception ignore) {}
     }
-  }
-
-  private static String pick(String src, String prefix, String until) {
-    int s = src.indexOf(prefix);
-    if (s < 0) return null;
-    s += prefix.length();
-    int e = src.indexOf(until, s);
-    if (e < 0) return null;
-    return src.substring(s, e);
   }
 }

@@ -24,6 +24,12 @@ gateway:
   prefer:
     G1: A1,A2
     G2: E1,E2
+  refer:
+    G1: A1,A2
+    G2: E1,E2
+  ws:
+    # ACK timeout for WS requests (ms)
+    ack-timeout-ms: 3000
 
 mybatis:
   mapper-locations: classpath*:mapper/*.xml

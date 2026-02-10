@@ -1,78 +1,73 @@
 package com.lmgx.gateway.connection;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 public class ProbeWsClient {
   private static final Logger log = LoggerFactory.getLogger(ProbeWsClient.class);
   private final ObjectMapper om = new ObjectMapper();
   private final StandardWebSocketClient client = new StandardWebSocketClient();
-  private final AckRegistry ack = new AckRegistry();
 
   private static final long TIMEOUT_MS = 1000;
+  private static final int DEFAULT_HB_PERIOD_SEC = 10;
+  private static final int DEFAULT_HA_STATE = 1;
 
   public boolean probe(String url) {
     CompletableFuture<Void> initDone = new CompletableFuture<>();
-    CompletableFuture<Void> pingDone = new CompletableFuture<>();
-    AtomicReference<String> initAckRef = new AtomicReference<>();
-    AtomicReference<String> pingAckRef = new AtomicReference<>();
+    CompletableFuture<Void> heartbeatDone = new CompletableFuture<>();
 
     WebSocketHandler h = new TextWebSocketHandler() {
       @Override
-      protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-        String p = message.getPayload();
+      protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        try {
+          String p = message.getPayload();
+          @SuppressWarnings("unchecked")
+          Map<String, Object> msg = om.readValue(p, Map.class);
 
-        if (p.contains("\"command\":1")) {
-          String initAckId = ack.newId("PI");
-          initAckRef.set(initAckId);
-          ack.register(initAckId);
-
-          synchronized (session) {
-            session.sendMessage(new TextMessage(om.writeValueAsString(Map.of(
-                "command", 2,
-                "type", "C",
-                "ackId", initAckId
-            ))));
-          }
-          return;
-        }
-
-        if (p.contains("\"command\":\"ACK\"") && p.contains("\"ackId\"")) {
-          String ackId = pick(p, "\"ackId\":\"", "\"");
-          if (ackId == null) return;
-
-          ack.ack(ackId);
-
-          if (ackId.equals(initAckRef.get())) {
-            initDone.complete(null);
-
-            String pingAckId = ack.newId("PH");
-            pingAckRef.set(pingAckId);
-            ack.register(pingAckId);
-
-            synchronized (session) {
-              session.sendMessage(new TextMessage(om.writeValueAsString(Map.of(
-                  "command", "PING",
-                  "ackId", pingAckId
-              ))));
+          Object command = commandOf(msg);
+          if (isInitCommand(command)) {
+            int hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
+            int haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
+            if (!sendJson(session, Map.of(
+                "Command", 2,
+                "HostKind", 1,
+                "HBPeriod", hbPeriodSec,
+                "HaState", haState,
+                "ResultCode", 1
+            ))) {
+              throw new IllegalStateException("session closed while sending init response");
             }
+
+            if (!sendJson(session, Map.of(
+                "Command", 3,
+                "HaState", haState
+            ))) {
+              throw new IllegalStateException("session closed while sending heartbeat");
+            }
+
+            initDone.complete(null);
             return;
           }
 
-          if (ackId.equals(pingAckRef.get())) {
-            pingDone.complete(null);
+          if (isHeartbeatAckCommand(command)) {
+            int ackHaState = readInt(msg, "HaState", DEFAULT_HA_STATE);
+            Object nodeRole1 = msg.getOrDefault("NodeRole1", msg.get("nodeRole1"));
+            Object nodeRole2 = msg.getOrDefault("NodeRole2", msg.get("nodeRole2"));
+            log.debug("probe heartbeat ack: haState={}, nodeRole1={}, nodeRole2={}", ackHaState, nodeRole1, nodeRole2);
+            heartbeatDone.complete(null);
           }
+        } catch (Exception e) {
+          log.debug("probe ws message handling error: {}", e.getMessage());
         }
       }
     };
@@ -81,7 +76,7 @@ public class ProbeWsClient {
     try {
       s = client.execute(h, url).get(1, TimeUnit.SECONDS);
       initDone.get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
-      pingDone.get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+      heartbeatDone.get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
       log.debug("probe ok: {}", url);
       return true;
     } catch (Exception e) {
@@ -94,12 +89,50 @@ public class ProbeWsClient {
     }
   }
 
-  private static String pick(String src, String prefix, String until) {
-    int s = src.indexOf(prefix);
-    if (s < 0) return null;
-    s += prefix.length();
-    int e = src.indexOf(until, s);
-    if (e < 0) return null;
-    return src.substring(s, e);
+  private boolean sendJson(WebSocketSession session, Map<String, Object> payload) {
+    if (session == null || !session.isOpen()) {
+      return false;
+    }
+    try {
+      synchronized (session) {
+        if (!session.isOpen()) {
+          return false;
+        }
+        session.sendMessage(new TextMessage(om.writeValueAsString(payload)));
+      }
+      return true;
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
+  private static int readInt(Map<String, Object> msg, String key, int defaultValue) {
+    Object v = msg.get(key);
+    if (v == null) {
+      String lower = Character.toLowerCase(key.charAt(0)) + key.substring(1);
+      v = msg.get(lower);
+    }
+    if (v == null) return defaultValue;
+    try {
+      if (v instanceof Number n) {
+        return n.intValue();
+      }
+      return Integer.parseInt(String.valueOf(v));
+    } catch (Exception e) {
+      return defaultValue;
+    }
+  }
+
+  private static Object commandOf(Map<String, Object> msg) {
+    Object c = msg.get("command");
+    return c != null ? c : msg.get("Command");
+  }
+
+  private static boolean isInitCommand(Object command) {
+    return Integer.valueOf(1).equals(command) || "1".equals(String.valueOf(command));
+  }
+
+  private static boolean isHeartbeatAckCommand(Object command) {
+    return Integer.valueOf(4).equals(command) || "4".equals(String.valueOf(command));
   }
 }

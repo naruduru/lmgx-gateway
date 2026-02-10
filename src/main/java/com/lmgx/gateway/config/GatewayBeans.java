@@ -4,15 +4,27 @@ import com.lmgx.gateway.instance.InstanceControlStore;
 import com.lmgx.gateway.connection.GatewayWsClient;
 import com.lmgx.gateway.connection.ProbeWsClient;
 import com.lmgx.gateway.target.TargetToggleStore;
+import jakarta.websocket.WebSocketContainer;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 
 @Configuration
 public class GatewayBeans {
 
   @Bean
-  public GatewayWsClient gatewayWsClient(com.lmgx.gateway.connection.IncomingMessageDispatcher dispatcher) {
-    return new GatewayWsClient(dispatcher);
+  public GatewayWsClient gatewayWsClient(
+      com.lmgx.gateway.connection.IncomingMessageDispatcher dispatcher,
+      ObjectProvider<WebSocketContainer> webSocketContainerProvider,
+      @Value("${gateway.ws.ack-timeout-ms:1000}") long ackTimeoutMs
+  ) {
+    WebSocketContainer webSocketContainer = webSocketContainerProvider.getIfAvailable();
+    StandardWebSocketClient client = webSocketContainer == null
+        ? new StandardWebSocketClient()
+        : new StandardWebSocketClient(webSocketContainer);
+    return new GatewayWsClient(dispatcher, client, ackTimeoutMs);
   }
 
   @Bean

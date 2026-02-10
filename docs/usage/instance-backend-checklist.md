@@ -92,7 +92,8 @@ DB를 쓰지 않는 경우 아래는 제외해도 됩니다.
 
 - 연결/헬스 체크 관련
   - `FailoverLoop` tick 주기: 1초
-  - `GatewayWsClient` ACK 타임아웃: 1초
+  - `GatewayWsClient` ACK 타임아웃: 기본 1초 (`gateway.ws.ack-timeout-ms`로 조정)
+  - 하트비트: 연결 후 `Command=1(HBPeriod/HaState)` 수신 시 `Command=2`(`HostKind/HBPeriod/HaState/ResultCode`) 응답, 이후 `Command=3(HaState)` 전송 후 `Command=4(HaState/NodeRole1/NodeRole2)` 수신 확인
   - `ProbeWsClient` 타임아웃: 1초
   - `PING_STALE_MS`: 5초
   - `PING_FAIL_THRESHOLD`: 3회
@@ -120,3 +121,17 @@ DB를 쓰지 않는 경우 아래는 제외해도 됩니다.
   - activeUrl/인스턴스/로그가 외부로 노출되지 않도록 분리
 - DB 계정 권한 최소화
   - 로깅용 계정은 읽기/쓰기 최소 권한만 부여
+
+## 9) TimeoutException: null 발생 시
+
+원격 타겟 ACK가 1초 내에 오지 않으면 `java.util.concurrent.TimeoutException`이 발생할 수 있습니다.
+
+- `application.yml`에 ACK 타임아웃을 환경에 맞게 상향합니다.
+  ```yaml
+  gateway:
+    ws:
+      ack-timeout-ms: 3000
+  ```
+- 네트워크 지연이 큰 환경이면 3~5초부터 시작해 조정하세요.
+- 핸드셰이크/ACK 응답 포맷(`{"command":"ACK","ackId":"..."}`)이 맞는지 확인하세요.
+- 타겟이 `Command=1` 직후 세션을 닫는 환경에서는 초기 응답/하트비트 전송 전에 세션 오픈 상태를 반드시 확인하세요.
