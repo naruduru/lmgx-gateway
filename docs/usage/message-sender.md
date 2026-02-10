@@ -4,11 +4,12 @@
 
 ## Payload 샘플
 
-채팅/이메일 모두 JSON Map 형태로 전달하며 `cmd` 필드는 필수입니다.
+채팅/이메일 모두 JSON Map 형태로 전달하며 `Command` 필드는 필수입니다.
+`Command` 값은 숫자지만 문자열로 전송합니다.
 
 ```json
 {
-  "cmd": "CHAT_SEND",
+  "Command": "601",
   "to": "user01",
   "subject": "Hello",
   "message": "Test message",
@@ -59,7 +60,7 @@ import java.util.Map;
 public class OrderCmdHandler implements IncomingCommandHandler {
   @Override
   public List<String> cmds() {
-    return List.of("ORDER_CREATED", "ORDER_PAID");
+    return List.of("601", "602");
   }
 
   @Override
@@ -73,7 +74,7 @@ public class OrderCmdHandler implements IncomingCommandHandler {
 }
 ```
 
-## 수신 cmd 핸들러 예시 (멀티 cmd)
+## 수신 Command 핸들러 예시 (멀티 Command)
 
 ```java
 import com.lmgx.gateway.connection.IncomingCommandHandler;

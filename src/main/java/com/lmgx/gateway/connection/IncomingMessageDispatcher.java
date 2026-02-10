@@ -29,14 +29,25 @@ public class IncomingMessageDispatcher {
         if (message == null) {
             return;
         }
-        Object cmdObj = message.get("cmd");
-        if (!(cmdObj instanceof String cmd)) {
+        String command = commandOf(message);
+        if (command == null || command.isBlank()) {
             return;
         }
-        IncomingCommandHandler handler = handlers.get(cmd);
+        IncomingCommandHandler handler = handlers.get(command);
         if (handler == null) {
             return;
         }
         handler.handle(channel, message);
+    }
+
+    private static String commandOf(Map<String, Object> message) {
+        Object cmdObj = message.get("Command");
+        if (cmdObj == null) {
+            cmdObj = message.get("command");
+        }
+        if (cmdObj == null) {
+            return null;
+        }
+        return String.valueOf(cmdObj);
     }
 }

@@ -35,11 +35,13 @@ public class ProbeWsClient {
           Map<String, Object> msg = om.readValue(p, Map.class);
 
           Object command = commandOf(msg);
+          log.debug("probe recv: command={}, payload={}", command, msg);
           if (isInitCommand(command)) {
             int hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
             int haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
+            log.debug("probe init recv: hbPeriodSec={}, haState={}", hbPeriodSec, haState);
             if (!sendJson(session, Map.of(
-                "Command", 2,
+                "Command", "2",
                 "HostKind", 1,
                 "HBPeriod", hbPeriodSec,
                 "HaState", haState,
@@ -47,13 +49,16 @@ public class ProbeWsClient {
             ))) {
               throw new IllegalStateException("session closed while sending init response");
             }
+            log.debug("probe init sent: command=2, hbPeriodSec={}, haState={}", hbPeriodSec, haState);
 
+            log.debug("probe hb send: command=3, haState={}", haState);
             if (!sendJson(session, Map.of(
-                "Command", 3,
+                "Command", "3",
                 "HaState", haState
             ))) {
               throw new IllegalStateException("session closed while sending heartbeat");
             }
+            log.debug("probe hb sent: command=3, haState={}", haState);
 
             initDone.complete(null);
             return;

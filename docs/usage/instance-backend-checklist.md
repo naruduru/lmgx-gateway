@@ -3,6 +3,8 @@
 아래 항목은 다른 프로젝트에서 **인스턴스 기능만 백엔드로 구현**할 때 필요한 파일/구성을 정리한 목록입니다.
 UI는 제외합니다.
 
+상세 가이드는 `docs/usage/instance-backend-guide.md`를 참고하세요.
+
 ## 1) 핵심 패키지/클래스
 
 - 연결/스위칭
@@ -75,11 +77,12 @@ DB를 쓰지 않는 경우 아래는 제외해도 됩니다.
 
 ## 6) 메시지 Payload 필수 필드
 
-`cmd`는 반드시 포함해야 합니다.
+`Command`는 반드시 포함해야 합니다.
+`Command` 값은 숫자지만 문자열로 전송합니다.
 
 ```json
 {
-  "cmd": "CHAT_SEND",
+  "Command": "601",
   "to": "user01",
   "subject": "Hello",
   "message": "Test message"
@@ -92,7 +95,7 @@ DB를 쓰지 않는 경우 아래는 제외해도 됩니다.
 
 - 연결/헬스 체크 관련
   - `FailoverLoop` tick 주기: 1초
-  - `GatewayWsClient` ACK 타임아웃: 기본 1초 (`gateway.ws.ack-timeout-ms`로 조정)
+  - `GatewayWsClient` 하트비트 응답 타임아웃: 기본 1초 (`gateway.ws.ack-timeout-ms`로 조정)
   - 하트비트: 연결 후 `Command=1(HBPeriod/HaState)` 수신 시 `Command=2`(`HostKind/HBPeriod/HaState/ResultCode`) 응답, 이후 `Command=3(HaState)` 전송 후 `Command=4(HaState/NodeRole1/NodeRole2)` 수신 확인
   - `ProbeWsClient` 타임아웃: 1초
   - `PING_STALE_MS`: 5초

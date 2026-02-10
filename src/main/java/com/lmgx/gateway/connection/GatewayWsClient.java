@@ -10,7 +10,9 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -26,7 +28,6 @@ public class GatewayWsClient {
 
   private final ObjectMapper om = new ObjectMapper();
   private final StandardWebSocketClient client;
-  private final AckRegistry ack = new AckRegistry();
   private final IncomingMessageDispatcher dispatcher;
   private final ExecutorService connector = Executors.newSingleThreadExecutor(r -> {
     Thread t = new Thread(r, "gw-ws-connector");
@@ -146,28 +147,19 @@ public class GatewayWsClient {
         return false;
       }
 
-      String id = ack.newId("H");
-      CompletableFuture<Void> f = ack.register(id);
       CompletableFuture<Void> hb = new CompletableFuture<>();
       if (!pendingHeartbeat.compareAndSet(null, hb)) {
         log.debug("heartbeat already pending");
         return false;
       }
-
-      synchronized (chat) {
-        chat.sendMessage(new TextMessage(om.writeValueAsString(Map.of(
-            "command", "PING",
-            "ackId", id
-        ))));
-      }
+      log.debug("hb send: command=3, haState={}, url={}", haState, currentUrl);
       if (!sendJson(chat, Map.of(
-          "Command", 3,
+          "Command", "3",
           "HaState", haState
       ))) {
         throw new IllegalStateException("session closed while sending heartbeat");
       }
-
-      f.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
+      log.debug("hb sent: command=3, url={}", currentUrl);
       hb.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
       lastPingOk = true;
       lastPingAt = System.currentTimeMillis();
@@ -191,33 +183,34 @@ public class GatewayWsClient {
   }
 
   public String sendChat(Map<String, Object> payload) throws Exception {
-    return send(chat, "CHAT_SEND", payload);
+    return send(chat, payload);
   }
 
   public String sendEmail(Map<String, Object> payload) throws Exception {
-    return send(email, "EMAIL_SEND", payload);
+    return send(email, payload);
   }
 
-  private String send(WebSocketSession s, String cmd, Map<String, Object> payload) throws Exception {
+  private String send(WebSocketSession s, Map<String, Object> payload) throws Exception {
     if (s == null || !s.isOpen()) throw new IllegalStateException("ws not open");
+    if (payload == null) throw new IllegalArgumentException("payload is required");
 
-    String id = ack.newId("B");
-    CompletableFuture<Void> f = ack.register(id);
+    Map<String, Object> data = new LinkedHashMap<>(payload);
+    Object command = data.get("Command");
+    if (command == null) {
+      command = data.remove("command");
+    }
+    data.remove("cmd");
+    if (command == null) {
+      throw new IllegalArgumentException("payload.Command is required");
+    }
+    data.put("Command", String.valueOf(command));
 
+    log.debug("msg send: command={}, url={}", data.get("Command"), currentUrl);
     synchronized (s) {
-      s.sendMessage(new TextMessage(om.writeValueAsString(Map.of(
-          "command", cmd,
-          "ackId", id,
-          "payload", payload
-      ))));
+      s.sendMessage(new TextMessage(om.writeValueAsString(data)));
     }
-
-    try {
-      f.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
-    } catch (TimeoutException e) {
-      throw new TimeoutException("ACK timeout after " + ackTimeoutMs + "ms for cmd=" + cmd + ", ackId=" + id);
-    }
-    return id;
+    log.debug("msg sent: command={}, url={}", data.get("Command"), currentUrl);
+    return "REQ-" + UUID.randomUUID();
   }
 
   private WebSocketSession open(String url, String type) {
@@ -233,12 +226,14 @@ public class GatewayWsClient {
           Map<String, Object> msg = om.readValue(p, Map.class);
 
           Object command = commandOf(msg);
+          log.debug("recv: type={}, command={}, payload={}", type, command, msg);
           if (isInitCommand(command)) {
             try {
               hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
               haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
+              log.debug("init recv: hbPeriodSec={}, haState={}, type={}", hbPeriodSec, haState, type);
               if (!sendJson(session, Map.of(
-                  "Command", 2,
+                  "Command", "2",
                   "HostKind", hostKindOf(type),
                   "HBPeriod", hbPeriodSec,
                   "HaState", haState,
@@ -246,6 +241,7 @@ public class GatewayWsClient {
               ))) {
                 throw new IllegalStateException("session closed while sending init response");
               }
+              log.debug("init sent: command=2, type={}, hbPeriodSec={}, haState={}", type, hbPeriodSec, haState);
               initDone.complete(null);
             } catch (Exception e) {
               initDone.completeExceptionally(e);
@@ -265,16 +261,7 @@ public class GatewayWsClient {
             return;
           }
 
-          if (isAckCommand(command)) {
-            Object ackIdObj = msg.get("ackId");
-            String ackId = ackIdObj == null ? null : String.valueOf(ackIdObj);
-            if (ackId != null) {
-              ack.ack(ackId);
-            }
-            return;
-          }
-
-          if (dispatcher != null && msg.get("cmd") instanceof String) {
+          if (dispatcher != null) {
             dispatcher.dispatch(channel, msg);
           }
         } catch (Exception e) {
@@ -339,10 +326,6 @@ public class GatewayWsClient {
 
   private static boolean isInitCommand(Object command) {
     return Integer.valueOf(1).equals(command) || "1".equals(String.valueOf(command));
-  }
-
-  private static boolean isAckCommand(Object command) {
-    return "ACK".equals(String.valueOf(command));
   }
 
   private static boolean isHeartbeatAckCommand(Object command) {
