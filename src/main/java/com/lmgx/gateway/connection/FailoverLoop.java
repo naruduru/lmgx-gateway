@@ -45,6 +45,11 @@ public class FailoverLoop {
 
   private static final int FAIL_THRESHOLD = 2;
   private static final int RECOVER_STABLE_THRESHOLD = 5;
+  private static final int NOT_READY_THRESHOLD = 3;
+  private static final long SAME_TARGET_RECONNECT_COOLDOWN_MS = 30_000L;
+
+  private int notReadyStreak = 0;
+  private volatile long lastSameTargetReconnectAt = 0L;
 
   public FailoverLoop(GatewayWsClient ws, ProbeWsClient probe, GatewayLogMapper logMapper,
                       InstanceControlStore controlStore, Environment env) {
@@ -98,24 +103,45 @@ public class FailoverLoop {
 
       log.debug("tick: group={}, active={}, ready={}", activeGroup, active, ready);
       if (controlStore.isPaused()) {
+        notReadyStreak = 0;
         ws.disconnectAll();
         return;
       }
-      if (!ws.isReady()) {
+      if (!ready) {
+        notReadyStreak++;
+        log.warn("ready=false observed: group={}, active={}, streak={}, wsState={}",
+            activeGroup, active, notReadyStreak, ws.readinessDebug());
         String found = findFirstAliveInRing(activeGroup, active);
         if (found != null) {
           if (!found.equals(active)) {
+            notReadyStreak = 0;
             switchTo(found, "NOT_READY_RING_SCAN");
           } else {
-            log.info("not ready but alive, reconnecting current: {}", active);
-            ws.connectForce(active);
+            if (notReadyStreak < NOT_READY_THRESHOLD) {
+              log.info("not ready but alive, waiting threshold: active={}, streak={}/{}",
+                  active, notReadyStreak, NOT_READY_THRESHOLD);
+            } else {
+              long cooldownLeft = SAME_TARGET_RECONNECT_COOLDOWN_MS - (now - lastSameTargetReconnectAt);
+              if (cooldownLeft > 0) {
+                log.info("not ready but alive, cooldown active: active={}, waitMs={}", active, cooldownLeft);
+              } else {
+                log.info("not ready but alive, reconnecting current: {}, streak={}, wsState={}",
+                  active, notReadyStreak, ws.readinessDebug());
+                ws.connectForce(active);
+                lastSameTargetReconnectAt = now;
+                notReadyStreak = 0;
+              }
+            }
           }
         } else {
+          notReadyStreak = 0;
           log.warn("No alive target found in ring, reconnecting current: {}", active);
           ws.connect(active);
         }
         return;
       }
+
+      notReadyStreak = 0;
 
       long t0 = System.currentTimeMillis();
       boolean ok = ws.pingChat();

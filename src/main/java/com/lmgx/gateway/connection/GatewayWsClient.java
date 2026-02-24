@@ -117,6 +117,22 @@ public class GatewayWsClient {
 
   public String currentUrl() { return currentUrl; }
 
+  public long lastPingAt() { return lastPingAt; }
+  public boolean lastPingOk() { return lastPingOk; }
+  public int pingFailures() { return pingFailures.get(); }
+  public boolean isConnecting() { return connecting.get(); }
+  public String readinessDebug() {
+    long age = lastPingAt <= 0 ? -1 : (System.currentTimeMillis() - lastPingAt);
+    return "chatOpen=" + isChatOpen()
+        + ", emailOpen=" + isEmailOpen()
+        + ", connecting=" + isConnecting()
+        + ", currentUrl=" + currentUrl
+        + ", lastPingOk=" + lastPingOk
+        + ", pingFailures=" + pingFailures.get()
+        + ", pingAgeMs=" + age
+        + ", nextConnectAllowedInMs=" + Math.max(0L, nextConnectAllowedAt - System.currentTimeMillis());
+  }
+
   public boolean isChatOpen() { return chat != null && chat.isOpen(); }
   public boolean isEmailOpen() { return email != null && email.isOpen(); }
   public boolean isReady() { return isChatOpen() && isEmailOpen(); }
@@ -218,6 +234,24 @@ public class GatewayWsClient {
     MessageSender.Channel channel = "I".equals(type) ? MessageSender.Channel.EMAIL : MessageSender.Channel.CHAT;
 
     WebSocketHandler h = new TextWebSocketHandler() {
+      @Override
+      public void afterConnectionEstablished(WebSocketSession session) {
+        log.info("ws established: type={}, sessionId={}, url={}", type, session.getId(), url);
+      }
+
+      @Override
+      public void afterConnectionClosed(WebSocketSession session, org.springframework.web.socket.CloseStatus status) {
+        log.warn("ws closed: type={}, sessionId={}, url={}, code={}, reason={}, readyState={}",
+            type, session.getId(), url, status.getCode(), status.getReason(), readinessDebug());
+      }
+
+      @Override
+      public void handleTransportError(WebSocketSession session, Throwable exception) {
+        String sessionId = session != null ? session.getId() : "null";
+        log.warn("ws transport error: type={}, sessionId={}, url={}, cause={}, readyState={}",
+            type, sessionId, url, describe(exception), readinessDebug(), exception);
+      }
+
       @Override
       protected void handleTextMessage(WebSocketSession session, TextMessage message) {
         try {
