@@ -3,7 +3,7 @@ package com.lmgx.gateway.connection;
 import com.lmgx.gateway.instance.InstanceControlStore;
 import com.lmgx.gateway.persist.FailoverEventLog;
 import com.lmgx.gateway.persist.GatewayLogMapper;
-import com.lmgx.gateway.persist.TargetHealthLog;
+import com.lmgx.gateway.persist.HealthStatus;
 import com.lmgx.gateway.connection.GatewayWsClient;
 import com.lmgx.gateway.connection.ProbeWsClient;
 import org.slf4j.Logger;
@@ -13,6 +13,8 @@ import org.springframework.core.env.Environment;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+
+import java.net.InetAddress;
 
 @Component
 public class FailoverLoop {
@@ -39,6 +41,7 @@ public class FailoverLoop {
 
   private volatile String activeGroup = "G1";
   private volatile String active;
+  private final String sourceIp;
 
   private int failCount = 0;
   private int recoverStable = 0;
@@ -77,6 +80,7 @@ public class FailoverLoop {
       this.activeGroup = "G1";
     }
 
+    this.sourceIp = resolveSourceIp(env.getProperty("gateway.source-ip"));
     this.active = urlOf(ringOf(activeGroup)[0]);
     log.info("FailoverLoop init: group={}, active={}", activeGroup, active);
   }
@@ -147,8 +151,7 @@ public class FailoverLoop {
       boolean ok = ws.pingBoth();
       long ms = System.currentTimeMillis() - t0;
 
-      logHealth("PING", activeGroup, targetIdOf(active), active, ok, ms,
-          ok ? null : "PING_FAIL", null);
+      updateHealthStatus(active, ok);
       log.debug("ping: ok={}, ms={}, active={}", ok, ms, active);
 
       if (!ok) {
@@ -294,8 +297,7 @@ public class FailoverLoop {
     boolean up = probe.probe(url);
     long ms = System.currentTimeMillis() - t0;
 
-    logHealth("PROBE", activeGroup, targetIdOf(url), url, up, ms,
-        up ? null : "PROBE_FAIL", null);
+    updateHealthStatus(url, up);
     log.debug("probe: url={}, up={}, ms={}", url, up, ms);
 
     return up;
@@ -338,30 +340,42 @@ public class FailoverLoop {
     return url.substring(i + 1);
   }
 
-  private void logHealth(String kind, String group, String tid, String url, boolean up,
-                         long latency, String reason, String detail) {
-    if (tid == null || url == null) return;
-
-    TargetHealthLog h = new TargetHealthLog();
-    h.serverGroup = group;
-    h.targetId = tid;
-    h.targetUrl = url;
-    h.checkKind = kind;
-    h.isUp = up ? "Y" : "N";
-    h.latencyMs = latency;
-    h.failReason = reason;
-    h.detailMsg = detail;
-
-    safeInsertHealth(h);
-  }
-
-  private void safeInsertHealth(TargetHealthLog log) {
-    // DB integration note: replace with site-specific persistence if needed.
-    try { logMapper.insertTargetHealth(log); } catch (Exception ignore) {}
+  private void updateHealthStatus(String targetUrl, boolean up) {
+    String targetIp = hostOf(targetUrl);
+    if (targetIp == null || targetIp.isBlank()) {
+      return;
+    }
+    HealthStatus status = new HealthStatus();
+    status.srcIp = sourceIp;
+    status.targetIp = targetIp;
+    status.isUp = up ? "Y" : "N";
+    try { logMapper.upsertHealthStatus(status); } catch (Exception ignore) {}
   }
 
   private void safeInsertEvent(FailoverEventLog log) {
     // DB integration note: replace with site-specific persistence if needed.
     try { logMapper.insertFailoverEvent(log); } catch (Exception ignore) {}
+  }
+
+  private static String hostOf(String url) {
+    if (url == null || url.isBlank()) {
+      return null;
+    }
+    try {
+      return java.net.URI.create(url).getHost();
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  private static String resolveSourceIp(String configuredIp) {
+    if (configuredIp != null && !configuredIp.isBlank()) {
+      return configuredIp.trim();
+    }
+    try {
+      return InetAddress.getLocalHost().getHostAddress();
+    } catch (Exception e) {
+      return "127.0.0.1";
+    }
   }
 }

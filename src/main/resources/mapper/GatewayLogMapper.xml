@@ -6,11 +6,15 @@
 <mapper namespace="com.lmgx.gateway.persist.GatewayLogMapper">
   <!-- DB integration note: replace this mapper with your site's persistence if needed. -->
 
-  <insert id="insertTargetHealth">
+  <insert id="upsertHealthStatus">
     INSERT INTO GW_TARGET_HEALTH
-    (SERVER_GROUP, TARGET_ID, TARGET_URL, CHECK_KIND, IS_UP, LATENCY_MS, FAIL_REASON, DETAIL_MSG)
+    (SRC_IP, TARGET_IP, IS_UP, UPDATED_AT)
     VALUES
-    (#{serverGroup}, #{targetId}, #{targetUrl}, #{checkKind}, #{isUp}, #{latencyMs}, #{failReason}, #{detailMsg})
+    (#{srcIp}, #{targetIp}, #{isUp}, NOW())
+    ON CONFLICT (SRC_IP, TARGET_IP)
+    DO UPDATE SET
+      IS_UP = EXCLUDED.IS_UP,
+      UPDATED_AT = NOW()
   </insert>
 
   <insert id="insertFailoverEvent">
@@ -22,17 +26,17 @@
 
   <select id="selectRecentHealth" parameterType="int" resultType="com.lmgx.gateway.persist.TargetHealthLog">
     SELECT
-      CREATED_AT as createdAt,
-      SERVER_GROUP as serverGroup,
-      TARGET_ID as targetId,
-      TARGET_URL as targetUrl,
-      CHECK_KIND as checkKind,
+      UPDATED_AT as createdAt,
+      SRC_IP as serverGroup,
+      TARGET_IP as targetId,
+      TARGET_IP as targetUrl,
+      'HEALTH' as checkKind,
       IS_UP as isUp,
-      LATENCY_MS as latencyMs,
-      FAIL_REASON as failReason,
-      DETAIL_MSG as detailMsg
+      null as latencyMs,
+      null as failReason,
+      null as detailMsg
     FROM GW_TARGET_HEALTH
-    ORDER BY CREATED_AT DESC
+    ORDER BY UPDATED_AT DESC
     LIMIT #{param1}
   </select>
 
