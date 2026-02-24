@@ -14,32 +14,63 @@ public class UqSender {
     this.sender = sender;
   }
 
-  public void sendRoute(Map<String, Object> payload) throws Exception {
-    send(MessageSender.Channel.CHAT, "1537", payload);
-  }
-
-  public void sendCancel(Map<String, Object> payload) throws Exception {
-    send(MessageSender.Channel.CHAT, "1539", payload);
-  }
-
-  public void sendUpdate(Map<String, Object> payload) throws Exception {
-    send(MessageSender.Channel.CHAT, "1541", payload);
-  }
-
-  public void sendNotify(Map<String, Object> payload) throws Exception {
-    send(MessageSender.Channel.CHAT, "1543", payload);
-  }
-
-  public void sendComplete(Map<String, Object> payload) throws Exception {
-    send(MessageSender.Channel.CHAT, "1545", payload);
-  }
-
-  private void send(MessageSender.Channel channel, String command, Map<String, Object> payload) throws Exception {
+  public String send(MessageSender.Channel channel, Map<String, Object> payload) throws Exception {
+    if (channel == null) {
+      throw new IllegalArgumentException("channel is required");
+    }
     Map<String, Object> data = new LinkedHashMap<>();
     if (payload != null) {
       data.putAll(payload);
     }
-    data.put("Command", String.valueOf(command));
+    Object command = data.get("Command");
+    if (command == null) {
+      command = data.remove("command");
+    }
+    data.remove("cmd");
+    if (command == null) {
+      throw new IllegalArgumentException("payload.Command is required");
+    }
+    data.put("Command", normalizeCommand(command));
+    return sender.send(channel, data);
+  }
+
+  public void sendRoute(Map<String, Object> payload) throws Exception {
+    sendCommand(MessageSender.Channel.CHAT, 1537, payload);
+  }
+
+  public void sendCancel(Map<String, Object> payload) throws Exception {
+    sendCommand(MessageSender.Channel.CHAT, 1539, payload);
+  }
+
+  public void sendUpdate(Map<String, Object> payload) throws Exception {
+    sendCommand(MessageSender.Channel.CHAT, 1541, payload);
+  }
+
+  public void sendNotify(Map<String, Object> payload) throws Exception {
+    sendCommand(MessageSender.Channel.CHAT, 1543, payload);
+  }
+
+  public void sendComplete(Map<String, Object> payload) throws Exception {
+    sendCommand(MessageSender.Channel.CHAT, 1545, payload);
+  }
+
+  private void sendCommand(MessageSender.Channel channel, int command, Map<String, Object> payload) throws Exception {
+    Map<String, Object> data = new LinkedHashMap<>();
+    if (payload != null) {
+      data.putAll(payload);
+    }
+    data.put("Command", command);
     sender.send(channel, data);
+  }
+
+  private static int normalizeCommand(Object command) {
+    if (command instanceof Number n) {
+      return n.intValue();
+    }
+    try {
+      return Integer.parseInt(String.valueOf(command).trim());
+    } catch (Exception e) {
+      throw new IllegalArgumentException("payload.Command must be numeric");
+    }
   }
 }

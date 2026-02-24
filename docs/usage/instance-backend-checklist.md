@@ -78,11 +78,11 @@ DB를 쓰지 않는 경우 아래는 제외해도 됩니다.
 ## 6) 메시지 Payload 필수 필드
 
 `Command`는 반드시 포함해야 합니다.
-`Command` 값은 숫자지만 문자열로 전송합니다.
+`Command` 값은 숫자 타입으로 전송합니다.
 
 ```json
 {
-  "Command": "601",
+  "Command": 601,
   "to": "user01",
   "subject": "Hello",
   "message": "Test message"

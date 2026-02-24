@@ -5,11 +5,11 @@
 ## Payload 샘플
 
 채팅/이메일 모두 JSON Map 형태로 전달하며 `Command` 필드는 필수입니다.
-`Command` 값은 숫자지만 문자열로 전송합니다.
+`Command` 값은 숫자 타입으로 전송합니다.
 
 ```json
 {
-  "Command": "601",
+  "Command": 601,
   "to": "user01",
   "subject": "Hello",
   "message": "Test message",

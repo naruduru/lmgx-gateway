@@ -73,13 +73,13 @@ gateway:
 
 - `cmd` 필드는 사용하지 않습니다.
 - `Command`만 사용합니다.
-- `Command` 값은 **숫자이지만 문자열로 전송**합니다.
+- `Command` 값은 **숫자 타입으로 전송**합니다.
 
 예시:
 
 ```json
 {
-  "Command": "601",
+  "Command": 601,
   "UCID": "U-20240207-0001",
   "CallingUserId": "user01",
   "UserData": "payload"
@@ -156,7 +156,7 @@ public class UqCommandHandler implements com.lmgx.gateway.connection.IncomingCom
 ## 8) 자주 발생하는 이슈
 
 - `TimeoutException`: `gateway.ws.ack-timeout-ms`를 늘려서 테스트하세요.
-- `Command` 타입: 서버는 숫자를 보내도 클라이언트는 문자열로 처리합니다.
+- `Command` 타입: 숫자 타입으로 전송/수신 처리하는 것을 권장합니다.
 - `cmd` 필드: 사용하지 않습니다. `Command`만 사용하세요.
 - `ACK` 기반 메시지: 업체 규격에 없다면 사용하지 않습니다.
 

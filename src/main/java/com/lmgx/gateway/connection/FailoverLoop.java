@@ -144,7 +144,7 @@ public class FailoverLoop {
       notReadyStreak = 0;
 
       long t0 = System.currentTimeMillis();
-      boolean ok = ws.pingChat();
+      boolean ok = ws.pingBoth();
       long ms = System.currentTimeMillis() - t0;
 
       logHealth("PING", activeGroup, targetIdOf(active), active, ok, ms,

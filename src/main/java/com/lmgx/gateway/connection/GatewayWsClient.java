@@ -154,48 +154,24 @@ public class GatewayWsClient {
   }
 
   public boolean pingChat() {
-    long now = System.currentTimeMillis();
-    try {
-      if (chat == null || !chat.isOpen()) {
-        lastPingOk = false;
-        lastPingAt = now;
-        pingFailures.incrementAndGet();
-        return false;
-      }
+    boolean ok = pingSession(chat, "C");
+    updatePingState(ok);
+    return ok;
+  }
 
-      CompletableFuture<Void> hb = new CompletableFuture<>();
-      if (!pendingHeartbeat.compareAndSet(null, hb)) {
-        log.debug("heartbeat already pending");
-        return false;
-      }
-      log.debug("hb send: command=3, haState={}, url={}", haState, currentUrl);
-      if (!sendJson(chat, Map.of(
-          "Command", "3",
-          "HaState", haState
-      ))) {
-        throw new IllegalStateException("session closed while sending heartbeat");
-      }
-      log.debug("hb sent: command=3, url={}", currentUrl);
-      hb.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
-      lastPingOk = true;
-      lastPingAt = System.currentTimeMillis();
-      pingFailures.set(0);
-      return true;
-    } catch (TimeoutException e) {
-      log.warn("heartbeat timeout waiting command=4 after {}ms", ackTimeoutMs);
-      lastPingOk = false;
-      lastPingAt = System.currentTimeMillis();
-      pingFailures.incrementAndGet();
-      return false;
-    } catch (Exception e) {
-      log.debug("pingChat failed: {}", e.getMessage());
-      lastPingOk = false;
-      lastPingAt = System.currentTimeMillis();
-      pingFailures.incrementAndGet();
-      return false;
-    } finally {
-      pendingHeartbeat.set(null);
-    }
+  public boolean pingEmail() {
+    boolean ok = pingSession(email, "I");
+    updatePingState(ok);
+    return ok;
+  }
+
+  public boolean pingBoth() {
+    boolean chatOk = pingSession(chat, "C");
+    boolean emailOk = pingSession(email, "I");
+    boolean ok = chatOk && emailOk;
+    updatePingState(ok);
+    log.debug("ping both: chatOk={}, emailOk={}, overallOk={}, url={}", chatOk, emailOk, ok, currentUrl);
+    return ok;
   }
 
   public String sendChat(Map<String, Object> payload) throws Exception {
@@ -219,7 +195,7 @@ public class GatewayWsClient {
     if (command == null) {
       throw new IllegalArgumentException("payload.Command is required");
     }
-    data.put("Command", String.valueOf(command));
+    data.put("Command", normalizeCommand(command));
 
     log.debug("msg send: command={}, url={}", data.get("Command"), currentUrl);
     synchronized (s) {
@@ -267,7 +243,7 @@ public class GatewayWsClient {
               haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
               log.debug("init recv: hbPeriodSec={}, haState={}, type={}", hbPeriodSec, haState, type);
               if (!sendJson(session, Map.of(
-                  "Command", "2",
+                  "Command", 2,
                   "HostKind", hostKindOf(type),
                   "HBPeriod", hbPeriodSec,
                   "HaState", haState,
@@ -351,6 +327,58 @@ public class GatewayWsClient {
 
   private static Integer hostKindOf(String type) {
     return "I".equals(type) ? 2 : 1;
+  }
+
+  private boolean pingSession(WebSocketSession session, String type) {
+    try {
+      if (session == null || !session.isOpen()) {
+        return false;
+      }
+      CompletableFuture<Void> hb = new CompletableFuture<>();
+      if (!pendingHeartbeat.compareAndSet(null, hb)) {
+        log.debug("heartbeat already pending: type={}", type);
+        return false;
+      }
+      log.debug("hb send: command=3, type={}, haState={}, url={}", type, haState, currentUrl);
+      if (!sendJson(session, Map.of(
+          "Command", 3,
+          "HaState", haState
+      ))) {
+        throw new IllegalStateException("session closed while sending heartbeat");
+      }
+      log.debug("hb sent: command=3, type={}, url={}", type, currentUrl);
+      hb.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
+      return true;
+    } catch (TimeoutException e) {
+      log.warn("heartbeat timeout waiting command=4 after {}ms, type={}", ackTimeoutMs, type);
+      return false;
+    } catch (Exception e) {
+      log.debug("ping session failed: type={}, cause={}", type, e.getMessage());
+      return false;
+    } finally {
+      pendingHeartbeat.set(null);
+    }
+  }
+
+  private void updatePingState(boolean ok) {
+    lastPingOk = ok;
+    lastPingAt = System.currentTimeMillis();
+    if (ok) {
+      pingFailures.set(0);
+    } else {
+      pingFailures.incrementAndGet();
+    }
+  }
+
+  private static int normalizeCommand(Object command) {
+    if (command instanceof Number n) {
+      return n.intValue();
+    }
+    try {
+      return Integer.parseInt(String.valueOf(command).trim());
+    } catch (Exception e) {
+      throw new IllegalArgumentException("payload.Command must be numeric");
+    }
   }
 
   private static Object commandOf(Map<String, Object> msg) {

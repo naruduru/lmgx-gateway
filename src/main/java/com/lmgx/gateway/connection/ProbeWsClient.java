@@ -41,7 +41,7 @@ public class ProbeWsClient {
             int haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
             log.debug("probe init recv: hbPeriodSec={}, haState={}", hbPeriodSec, haState);
             if (!sendJson(session, Map.of(
-                "Command", "2",
+                "Command", 2,
                 "HostKind", 1,
                 "HBPeriod", hbPeriodSec,
                 "HaState", haState,
@@ -53,7 +53,7 @@ public class ProbeWsClient {
 
             log.debug("probe hb send: command=3, haState={}", haState);
             if (!sendJson(session, Map.of(
-                "Command", "3",
+                "Command", 3,
                 "HaState", haState
             ))) {
               throw new IllegalStateException("session closed while sending heartbeat");
