@@ -3,6 +3,8 @@
 This project optionally writes health, failover, and instance status to PostgreSQL.
 Use this schema if you enable DB logging.
 
+Health check table stores the latest status by `(SRC_IP, TARGET_IP)` via upsert (no history accumulation).
+
 ```sql
 CREATE TABLE IF NOT EXISTS GW_TARGET_HEALTH (
   SRC_IP VARCHAR(64) NOT NULL,

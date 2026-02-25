@@ -1,11 +1,16 @@
-# MessageSender 사용 예시
+# UqSender 사용 가이드
 
-서비스/컨트롤러 어디서든 `MessageSender`를 주입 받아 채팅/이메일 전송을 구분해 사용할 수 있습니다.
+현재 프로젝트의 전송 진입점은 `UqSender` 하나로 통일합니다.
+서비스/컨트롤러/배치에서는 `MessageSender`를 직접 호출하지 않고 `UqSender`를 사용하세요.
+
+## 전송 원칙
+
+- `cmd` 필드는 사용하지 않습니다.
+- `Command`만 사용합니다.
+- `Command` 값은 숫자 타입으로 전송합니다.
+- `UqSender.send(channel, payload)`를 공용 진입점으로 사용합니다.
 
 ## Payload 샘플
-
-채팅/이메일 모두 JSON Map 형태로 전달하며 `Command` 필드는 필수입니다.
-`Command` 값은 숫자 타입으로 전송합니다.
 
 ```json
 {
@@ -20,61 +25,62 @@
 }
 ```
 
+## 기본 사용 예시
+
 ```java
 import com.lmgx.gateway.connection.MessageSender;
+import com.lmgx.gateway.message.UqSender;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
 
 @Service
 public class NotificationService {
-  private final MessageSender sender;
+  private final UqSender uqSender;
 
-  public NotificationService(MessageSender sender) {
-    this.sender = sender;
+  public NotificationService(UqSender uqSender) {
+    this.uqSender = uqSender;
   }
 
   public String sendChat(Map<String, Object> payload) throws Exception {
-    return sender.send(MessageSender.Channel.CHAT, payload);
+    return uqSender.send(MessageSender.Channel.CHAT, payload);
   }
 
   public String sendEmail(Map<String, Object> payload) throws Exception {
-    return sender.send(MessageSender.Channel.EMAIL, payload);
+    return uqSender.send(MessageSender.Channel.EMAIL, payload);
   }
 }
 ```
 
-## 외부 패키지 사용 예시
+## UQ 전용 메서드 사용 예시
+
+`UqSender`에는 업무 커맨드 전용 헬퍼(`sendRoute`, `sendCancel` 등)가 포함되어 있습니다.
+고정 커맨드 전송이 필요한 경우 전용 메서드를 우선 사용하세요.
 
 ```java
-package com.example.orders;
+import com.lmgx.gateway.message.UqSender;
+import org.springframework.stereotype.Service;
 
-import com.lmgx.gateway.connection.IncomingCommandHandler;
-import com.lmgx.gateway.connection.MessageSender;
-import org.springframework.stereotype.Component;
-
-import java.util.List;
 import java.util.Map;
 
-@Component
-public class OrderCmdHandler implements IncomingCommandHandler {
-  @Override
-  public List<String> cmds() {
-    return List.of("601", "602");
+@Service
+public class UqClientService {
+  private final UqSender uqSender;
+
+  public UqClientService(UqSender uqSender) {
+    this.uqSender = uqSender;
   }
 
-  @Override
-  public void handle(MessageSender.Channel channel, Map<String, Object> message) {
-    if (channel == MessageSender.Channel.CHAT) {
-      // 주문 채팅 처리
-    } else {
-      // 주문 이메일 처리
-    }
+  public void sendRoute(String ucid, String userId) throws Exception {
+    uqSender.sendRoute(Map.of(
+        "UCID", ucid,
+        "CallingUserId", userId
+    ));
   }
 }
 ```
 
-## 수신 Command 핸들러 예시 (멀티 Command)
+## 수신 핸들러 예시
 
 ```java
 import com.lmgx.gateway.connection.IncomingCommandHandler;
@@ -98,30 +104,6 @@ public class CmdGroupHandler implements IncomingCommandHandler {
     } else {
       // email 처리
     }
-  }
-}
-```
-
-```java
-import com.lmgx.gateway.connection.MessageSender;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Map;
-
-@RestController
-public class NotifyController {
-  private final MessageSender sender;
-
-  public NotifyController(MessageSender sender) {
-    this.sender = sender;
-  }
-
-  @PostMapping("/notify/chat")
-  public Map<String, Object> notifyChat(@RequestBody Map<String, Object> body) throws Exception {
-    return Map.of("ok", true, "requestId",
-        sender.send(MessageSender.Channel.CHAT, body));
   }
 }
 ```
