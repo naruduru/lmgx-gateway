@@ -9,16 +9,17 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
-import java.util.Map;
 import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -34,13 +35,12 @@ public class GatewayWsClient {
     t.setDaemon(true);
     return t;
   });
-  private final AtomicBoolean connecting = new AtomicBoolean(false);
-  private final AtomicInteger connectFailures = new AtomicInteger(0);
-  private final AtomicReference<CompletableFuture<Void>> pendingHeartbeat = new AtomicReference<>();
-  private volatile long nextConnectAllowedAt = 0L;
 
-  private volatile WebSocketSession chat;   // type C
-  private volatile WebSocketSession email;  // type I
+  private final ConcurrentMap<String, SessionPair> sessions = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, Long> nextConnectAllowedAt = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, AtomicInteger> connectFailures = new ConcurrentHashMap<>();
+  private final java.util.Set<String> connectingUrls = ConcurrentHashMap.newKeySet();
+
   private volatile String currentUrl;
   private volatile boolean lastPingOk = false;
   private volatile long lastPingAt = 0L;
@@ -69,43 +69,51 @@ public class GatewayWsClient {
     connectInternal(wsUrl, true);
   }
 
+  public void connectAll(String... urls) {
+    if (urls == null) {
+      return;
+    }
+    for (String url : urls) {
+      connect(url);
+    }
+  }
+
   private void connectInternal(String wsUrl, boolean force) {
     if (wsUrl == null || wsUrl.isBlank()) {
       return;
     }
     this.currentUrl = wsUrl;
+
     long now = System.currentTimeMillis();
-    if (!force && now < nextConnectAllowedAt) {
+    long allowedAt = nextConnectAllowedAt.getOrDefault(wsUrl, 0L);
+    if (!force && now < allowedAt) {
       return;
     }
-    if (force) {
-      nextConnectAllowedAt = 0L;
-      connectFailures.set(0);
-    }
-    if (!connecting.compareAndSet(false, true)) {
+    if (!connectingUrls.add(wsUrl)) {
       return;
     }
+
     connector.submit(() -> {
-      synchronized (this) {
-        closeQuiet(chat);
-        closeQuiet(email);
-        pendingHeartbeat.set(null);
+      try {
+        SessionPair old = sessions.remove(wsUrl);
+        closePair(old);
         try {
           log.info("connect: {}", wsUrl);
-          chat = open(wsUrl, "C");
-          email = open(wsUrl, "I");
-          connectFailures.set(0);
-          nextConnectAllowedAt = 0L;
+          AtomicReference<CompletableFuture<Void>> pendingChat = new AtomicReference<>();
+          AtomicReference<CompletableFuture<Void>> pendingEmail = new AtomicReference<>();
+          WebSocketSession chat = open(wsUrl, "C", pendingChat, MessageSender.Channel.CHAT);
+          WebSocketSession email = open(wsUrl, "I", pendingEmail, MessageSender.Channel.EMAIL);
+          sessions.put(wsUrl, new SessionPair(chat, email, pendingChat, pendingEmail));
+          connectFailures.computeIfAbsent(wsUrl, k -> new AtomicInteger()).set(0);
+          nextConnectAllowedAt.put(wsUrl, 0L);
         } catch (Exception e) {
-          chat = null;
-          email = null;
-          int failures = connectFailures.incrementAndGet();
+          int failures = connectFailures.computeIfAbsent(wsUrl, k -> new AtomicInteger()).incrementAndGet();
           long backoff = calcBackoffMs(failures);
-          nextConnectAllowedAt = System.currentTimeMillis() + backoff;
-          log.warn("connect failed: {}", describe(e), e);
-        } finally {
-          connecting.set(false);
+          nextConnectAllowedAt.put(wsUrl, System.currentTimeMillis() + backoff);
+          log.warn("connect failed: url={}, cause={}", wsUrl, describe(e), e);
         }
+      } finally {
+        connectingUrls.remove(wsUrl);
       }
     });
   }
@@ -120,7 +128,7 @@ public class GatewayWsClient {
   public long lastPingAt() { return lastPingAt; }
   public boolean lastPingOk() { return lastPingOk; }
   public int pingFailures() { return pingFailures.get(); }
-  public boolean isConnecting() { return connecting.get(); }
+  public boolean isConnecting() { return !connectingUrls.isEmpty(); }
   public String readinessDebug() {
     long age = lastPingAt <= 0 ? -1 : (System.currentTimeMillis() - lastPingAt);
     return "chatOpen=" + isChatOpen()
@@ -129,13 +137,38 @@ public class GatewayWsClient {
         + ", currentUrl=" + currentUrl
         + ", lastPingOk=" + lastPingOk
         + ", pingFailures=" + pingFailures.get()
-        + ", pingAgeMs=" + age
-        + ", nextConnectAllowedInMs=" + Math.max(0L, nextConnectAllowedAt - System.currentTimeMillis());
+        + ", pingAgeMs=" + age;
   }
 
-  public boolean isChatOpen() { return chat != null && chat.isOpen(); }
-  public boolean isEmailOpen() { return email != null && email.isOpen(); }
-  public boolean isReady() { return isChatOpen() && isEmailOpen(); }
+  public boolean isChatOpen() { return isChatOpen(currentUrl); }
+  public boolean isEmailOpen() { return isEmailOpen(currentUrl); }
+  public boolean isReady() { return isReady(currentUrl); }
+  public boolean isHealthy() { return isHealthy(currentUrl); }
+
+  public boolean isChatOpen(String url) {
+    SessionPair pair = sessions.get(url);
+    return pair != null && pair.chat != null && pair.chat.isOpen();
+  }
+
+  public boolean isEmailOpen(String url) {
+    SessionPair pair = sessions.get(url);
+    return pair != null && pair.email != null && pair.email.isOpen();
+  }
+
+  public boolean isReady(String url) {
+    return isChatOpen(url) && isEmailOpen(url);
+  }
+
+  public boolean isHealthy(String url) {
+    if (!isReady(url)) {
+      return false;
+    }
+    if (url != null && url.equals(currentUrl)) {
+      return isPingHealthy();
+    }
+    return true;
+  }
+
   public boolean isPingHealthy() {
     long age = System.currentTimeMillis() - lastPingAt;
     if (age > PING_STALE_MS) {
@@ -143,46 +176,69 @@ public class GatewayWsClient {
     }
     return lastPingOk || pingFailures.get() < PING_FAIL_THRESHOLD;
   }
-  public boolean isHealthy() { return isChatOpen() && isEmailOpen() && isPingHealthy(); }
 
   public void disconnectAll() {
-    closeQuiet(chat);
-    closeQuiet(email);
-    chat = null;
-    email = null;
-    pendingHeartbeat.set(null);
+    for (SessionPair pair : sessions.values()) {
+      closePair(pair);
+    }
+    sessions.clear();
   }
 
   public boolean pingChat() {
-    boolean ok = pingSession(chat, "C");
-    updatePingState(ok);
-    return ok;
+    return pingChat(currentUrl);
   }
 
   public boolean pingEmail() {
-    boolean ok = pingSession(email, "I");
-    updatePingState(ok);
-    return ok;
+    return pingEmail(currentUrl);
   }
 
   public boolean pingBoth() {
-    boolean chatOk = pingSession(chat, "C");
-    boolean emailOk = pingSession(email, "I");
+    return pingBoth(currentUrl);
+  }
+
+  public boolean pingChat(String url) {
+    SessionPair pair = sessions.get(url);
+    boolean ok = pair != null && pingSession(pair.chat, pair.pendingChat, "C", url);
+    updatePingStateFor(url, ok);
+    return ok;
+  }
+
+  public boolean pingEmail(String url) {
+    SessionPair pair = sessions.get(url);
+    boolean ok = pair != null && pingSession(pair.email, pair.pendingEmail, "I", url);
+    updatePingStateFor(url, ok);
+    return ok;
+  }
+
+  public boolean pingBoth(String url) {
+    SessionPair pair = sessions.get(url);
+    boolean chatOk = pair != null && pingSession(pair.chat, pair.pendingChat, "C", url);
+    boolean emailOk = pair != null && pingSession(pair.email, pair.pendingEmail, "I", url);
     boolean ok = chatOk && emailOk;
-    updatePingState(ok);
-    log.debug("ping both: chatOk={}, emailOk={}, overallOk={}, url={}", chatOk, emailOk, ok, currentUrl);
+    updatePingStateFor(url, ok);
+    log.debug("ping both: url={}, chatOk={}, emailOk={}, overallOk={}", url, chatOk, emailOk, ok);
     return ok;
   }
 
   public String sendChat(Map<String, Object> payload) throws Exception {
-    return send(chat, payload);
+    return sendChat(currentUrl, payload);
   }
 
   public String sendEmail(Map<String, Object> payload) throws Exception {
-    return send(email, payload);
+    return sendEmail(currentUrl, payload);
   }
 
-  private String send(WebSocketSession s, Map<String, Object> payload) throws Exception {
+  public String sendChat(String url, Map<String, Object> payload) throws Exception {
+    SessionPair pair = sessions.get(url);
+    return send(pair != null ? pair.chat : null, payload, url);
+  }
+
+  public String sendEmail(String url, Map<String, Object> payload) throws Exception {
+    SessionPair pair = sessions.get(url);
+    return send(pair != null ? pair.email : null, payload, url);
+  }
+
+  private String send(WebSocketSession s, Map<String, Object> payload, String url) throws Exception {
     if (s == null || !s.isOpen()) throw new IllegalStateException("ws not open");
     if (payload == null) throw new IllegalArgumentException("payload is required");
 
@@ -197,17 +253,18 @@ public class GatewayWsClient {
     }
     data.put("Command", normalizeCommand(command));
 
-    log.debug("msg send: command={}, url={}", data.get("Command"), currentUrl);
+    log.debug("msg send: command={}, url={}", data.get("Command"), url);
     synchronized (s) {
       s.sendMessage(new TextMessage(om.writeValueAsString(data)));
     }
-    log.debug("msg sent: command={}, url={}", data.get("Command"), currentUrl);
+    log.debug("msg sent: command={}, url={}", data.get("Command"), url);
     return "REQ-" + UUID.randomUUID();
   }
 
-  private WebSocketSession open(String url, String type) {
+  private WebSocketSession open(String url, String type,
+                                AtomicReference<CompletableFuture<Void>> pendingRef,
+                                MessageSender.Channel channel) {
     CompletableFuture<Void> initDone = new CompletableFuture<>();
-    MessageSender.Channel channel = "I".equals(type) ? MessageSender.Channel.EMAIL : MessageSender.Channel.CHAT;
 
     WebSocketHandler h = new TextWebSocketHandler() {
       @Override
@@ -263,8 +320,8 @@ public class GatewayWsClient {
             int ackHaState = readInt(msg, "HaState", haState);
             Object nodeRole1 = msg.getOrDefault("NodeRole1", msg.get("nodeRole1"));
             Object nodeRole2 = msg.getOrDefault("NodeRole2", msg.get("nodeRole2"));
-            log.debug("heartbeat ack: haState={}, nodeRole1={}, nodeRole2={}", ackHaState, nodeRole1, nodeRole2);
-            CompletableFuture<Void> hb = pendingHeartbeat.getAndSet(null);
+            log.debug("heartbeat ack: type={}, haState={}, nodeRole1={}, nodeRole2={}", type, ackHaState, nodeRole1, nodeRole2);
+            CompletableFuture<Void> hb = pendingRef.getAndSet(null);
             if (hb != null && !hb.isDone()) {
               hb.complete(null);
             }
@@ -288,6 +345,53 @@ public class GatewayWsClient {
     } catch (Exception e) {
       log.warn("open failed: url={}, type={}, cause={}", url, type, describe(e), e);
       throw new RuntimeException("handshake/init fail: " + url + " type=" + type + " cause=" + describe(e), e);
+    }
+  }
+
+  private boolean pingSession(WebSocketSession session,
+                              AtomicReference<CompletableFuture<Void>> pendingRef,
+                              String type,
+                              String url) {
+    try {
+      if (session == null || !session.isOpen()) {
+        return false;
+      }
+      CompletableFuture<Void> hb = new CompletableFuture<>();
+      if (!pendingRef.compareAndSet(null, hb)) {
+        log.debug("heartbeat already pending: type={}, url={}", type, url);
+        return false;
+      }
+      log.debug("hb send: command=3, type={}, haState={}, url={}", type, haState, url);
+      if (!sendJson(session, Map.of(
+          "Command", 3,
+          "HaState", haState
+      ))) {
+        throw new IllegalStateException("session closed while sending heartbeat");
+      }
+      log.debug("hb sent: command=3, type={}, url={}", type, url);
+      hb.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
+      return true;
+    } catch (TimeoutException e) {
+      log.warn("heartbeat timeout waiting command=4 after {}ms, type={}, url={}", ackTimeoutMs, type, url);
+      return false;
+    } catch (Exception e) {
+      log.debug("ping session failed: type={}, url={}, cause={}", type, url, e.getMessage());
+      return false;
+    } finally {
+      pendingRef.set(null);
+    }
+  }
+
+  private void updatePingStateFor(String url, boolean ok) {
+    if (url == null || !url.equals(currentUrl)) {
+      return;
+    }
+    lastPingOk = ok;
+    lastPingAt = System.currentTimeMillis();
+    if (ok) {
+      pingFailures.set(0);
+    } else {
+      pingFailures.incrementAndGet();
     }
   }
 
@@ -329,47 +433,6 @@ public class GatewayWsClient {
     return "I".equals(type) ? 2 : 1;
   }
 
-  private boolean pingSession(WebSocketSession session, String type) {
-    try {
-      if (session == null || !session.isOpen()) {
-        return false;
-      }
-      CompletableFuture<Void> hb = new CompletableFuture<>();
-      if (!pendingHeartbeat.compareAndSet(null, hb)) {
-        log.debug("heartbeat already pending: type={}", type);
-        return false;
-      }
-      log.debug("hb send: command=3, type={}, haState={}, url={}", type, haState, currentUrl);
-      if (!sendJson(session, Map.of(
-          "Command", 3,
-          "HaState", haState
-      ))) {
-        throw new IllegalStateException("session closed while sending heartbeat");
-      }
-      log.debug("hb sent: command=3, type={}, url={}", type, currentUrl);
-      hb.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
-      return true;
-    } catch (TimeoutException e) {
-      log.warn("heartbeat timeout waiting command=4 after {}ms, type={}", ackTimeoutMs, type);
-      return false;
-    } catch (Exception e) {
-      log.debug("ping session failed: type={}, cause={}", type, e.getMessage());
-      return false;
-    } finally {
-      pendingHeartbeat.set(null);
-    }
-  }
-
-  private void updatePingState(boolean ok) {
-    lastPingOk = ok;
-    lastPingAt = System.currentTimeMillis();
-    if (ok) {
-      pingFailures.set(0);
-    } else {
-      pingFailures.incrementAndGet();
-    }
-  }
-
   private static int normalizeCommand(Object command) {
     if (command instanceof Number n) {
       return n.intValue();
@@ -409,6 +472,33 @@ public class GatewayWsClient {
   private static void closeQuiet(WebSocketSession s) {
     if (s != null && s.isOpen()) {
       try { s.close(); } catch (Exception ignore) {}
+    }
+  }
+
+  private static void closePair(SessionPair pair) {
+    if (pair == null) {
+      return;
+    }
+    closeQuiet(pair.chat);
+    closeQuiet(pair.email);
+    pair.pendingChat.set(null);
+    pair.pendingEmail.set(null);
+  }
+
+  private static final class SessionPair {
+    private final WebSocketSession chat;
+    private final WebSocketSession email;
+    private final AtomicReference<CompletableFuture<Void>> pendingChat;
+    private final AtomicReference<CompletableFuture<Void>> pendingEmail;
+
+    private SessionPair(WebSocketSession chat,
+                        WebSocketSession email,
+                        AtomicReference<CompletableFuture<Void>> pendingChat,
+                        AtomicReference<CompletableFuture<Void>> pendingEmail) {
+      this.chat = chat;
+      this.email = email;
+      this.pendingChat = pendingChat;
+      this.pendingEmail = pendingEmail;
     }
   }
 }

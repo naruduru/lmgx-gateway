@@ -1,7 +1,7 @@
 gateway:
   instance:
     id: ${GATEWAY_INSTANCE_ID:WA1}
-  # prod: WA1/WA2/WE1/WE2 + A1/A2/E1/E2
+  # prod: all targets enabled.
   targets:
     A1: ws://127.0.0.1:6701/clientws/A1
     A2: ws://127.0.0.1:6702/clientws/A2

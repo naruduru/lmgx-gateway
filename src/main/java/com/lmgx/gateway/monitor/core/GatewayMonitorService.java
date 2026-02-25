@@ -7,7 +7,6 @@ import com.lmgx.gateway.persist.GatewayLogMapper;
 import com.lmgx.gateway.persist.InstanceStatus;
 import com.lmgx.gateway.persist.TargetHealthLog;
 import com.lmgx.gateway.connection.GatewayWsClient;
-import com.lmgx.gateway.connection.ProbeWsClient;
 import com.lmgx.gateway.target.TargetToggleStore;
 import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -32,7 +31,6 @@ public class GatewayMonitorService {
     private final FailoverLoop failover;
     private final GatewayLogMapper logMapper;
     // DB integration note: logMapper can be replaced per site (optional monitoring storage).
-    private final ProbeWsClient probe;
     private final Map<String, Boolean> serverUpCache = new ConcurrentHashMap<>();
     private final Map<String, Boolean> ackCache = new ConcurrentHashMap<>();
     private final AtomicBoolean probing = new AtomicBoolean(false);
@@ -44,14 +42,13 @@ public class GatewayMonitorService {
 
     public GatewayMonitorService(Environment env, TargetToggleStore toggles, TargetAdminService adminService,
                                  GatewayWsClient ws, FailoverLoop failover,
-                                 GatewayLogMapper logMapper, ProbeWsClient probe) {
+                                 GatewayLogMapper logMapper) {
         this.env = env;
         this.toggles = toggles;
         this.adminService = adminService;
         this.ws = ws;
         this.failover = failover;
         this.logMapper = logMapper;
-        this.probe = probe;
     }
 
     public String activeGroup() {
@@ -85,11 +82,11 @@ public class GatewayMonitorService {
             String url = env.getProperty("gateway.targets." + id);
             boolean ackEnabled = ackCache.getOrDefault(id, toggles.isAckEnabled(id));
             boolean active = url != null && url.equals(activeUrl);
-            boolean ready = active && ws.isHealthy();
-            boolean chatOpen = active && ws.isChatOpen();
-            boolean emailOpen = active && ws.isEmailOpen();
+            boolean ready = url != null && ws.isHealthy(url);
+            boolean chatOpen = url != null && ws.isChatOpen(url);
+            boolean emailOpen = url != null && ws.isEmailOpen(url);
             boolean serverUp = serverUpCache.getOrDefault(id, false);
-            boolean localConnected = active && ws.isReady();
+            boolean localConnected = url != null && ws.isReady(url);
             upMap.put(id, serverUp);
             list.add(new TargetStatus(id, url, ackEnabled, active, ready, serverUp, localConnected, false,
                 chatOpen, emailOpen, null, null, rankMap.getOrDefault(id, "UNKNOWN"),
@@ -214,16 +211,13 @@ public class GatewayMonitorService {
 
     @Scheduled(fixedDelay = 1000)
     public void refreshServerUp() {
-        if (probe == null) {
-            return;
-        }
         if (!probing.compareAndSet(false, true)) {
             return;
         }
         try {
             for (String id : TARGET_IDS) {
                 String url = env.getProperty("gateway.targets." + id);
-                boolean up = url != null && probe.probe(url);
+                boolean up = url != null && ws.isReady(url);
                 serverUpCache.put(id, up);
                 Boolean ackEnabled = adminService.getAckEnabled(id);
                 if (ackEnabled != null) {

@@ -4,13 +4,11 @@ import com.lmgx.gateway.instance.InstanceControlStore;
 import com.lmgx.gateway.persist.FailoverEventLog;
 import com.lmgx.gateway.persist.GatewayLogMapper;
 import com.lmgx.gateway.persist.HealthStatus;
-import com.lmgx.gateway.connection.GatewayWsClient;
-import com.lmgx.gateway.connection.ProbeWsClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.core.env.Environment;
 import org.springframework.context.event.EventListener;
+import org.springframework.core.env.Environment;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -22,9 +20,7 @@ public class FailoverLoop {
   private static final Logger log = LoggerFactory.getLogger(FailoverLoop.class);
 
   private final GatewayWsClient ws;
-  private final ProbeWsClient probe;
   private final GatewayLogMapper logMapper;
-  // DB integration note: logMapper can be swapped per site (optional logging).
   private final InstanceControlStore controlStore;
 
   private final String A1;
@@ -54,10 +50,9 @@ public class FailoverLoop {
   private int notReadyStreak = 0;
   private volatile long lastSameTargetReconnectAt = 0L;
 
-  public FailoverLoop(GatewayWsClient ws, ProbeWsClient probe, GatewayLogMapper logMapper,
+  public FailoverLoop(GatewayWsClient ws, GatewayLogMapper logMapper,
                       InstanceControlStore controlStore, Environment env) {
     this.ws = ws;
-    this.probe = probe;
     this.logMapper = logMapper;
     this.controlStore = controlStore;
 
@@ -66,12 +61,12 @@ public class FailoverLoop {
     this.E1 = env.getProperty("gateway.targets.E1");
     this.E2 = env.getProperty("gateway.targets.E2");
 
-    this.ringG1 = parseIds(env.getProperty("gateway.ring.G1", "A1,A2,E1,E2"));
-    this.ringG2 = parseIds(env.getProperty("gateway.ring.G2", "E1,E2,A1,A2"));
-    this.recoverG1 = parseIds(env.getProperty("gateway.recover.G1", "A1,A2"));
-    this.recoverG2 = parseIds(env.getProperty("gateway.recover.G2", "E1,E2"));
-    this.preferG1 = parseIds(env.getProperty("gateway.prefer.G1", "A1,A2"));
-    this.preferG2 = parseIds(env.getProperty("gateway.prefer.G2", "E1,E2"));
+    this.ringG1 = configuredIds(parseIds(env.getProperty("gateway.ring.G1", "A1,A2,E1,E2")));
+    this.ringG2 = configuredIds(parseIds(env.getProperty("gateway.ring.G2", "E1,E2,A1,A2")));
+    this.recoverG1 = configuredIds(parseIds(env.getProperty("gateway.recover.G1", "A1,A2")));
+    this.recoverG2 = configuredIds(parseIds(env.getProperty("gateway.recover.G2", "E1,E2")));
+    this.preferG1 = configuredIds(parseIds(env.getProperty("gateway.prefer.G1", "A1,A2")));
+    this.preferG2 = configuredIds(parseIds(env.getProperty("gateway.prefer.G2", "E1,E2")));
 
     String overrideGroup = env.getProperty("gateway.group.override", "G1");
     if ("G2".equalsIgnoreCase(overrideGroup)) {
@@ -81,14 +76,16 @@ public class FailoverLoop {
     }
 
     this.sourceIp = resolveSourceIp(env.getProperty("gateway.source-ip"));
-    this.active = urlOf(ringOf(activeGroup)[0]);
+    String[] initialRing = ringOf(activeGroup);
+    this.active = initialRing.length == 0 ? null : urlOf(initialRing[0]);
     log.info("FailoverLoop init: group={}, active={}", activeGroup, active);
   }
 
   @EventListener(ApplicationReadyEvent.class)
   public void onReady() {
+    ensureAllTargetConnections();
     if (this.active != null) {
-      ws.connect(this.active);
+      ws.connectForce(this.active);
     }
   }
 
@@ -98,23 +95,28 @@ public class FailoverLoop {
   public void tick() {
     try {
       long now = System.currentTimeMillis();
-      boolean ready = ws.isReady();
       long interval = 1000;
       if (now - lastTickAt < interval) {
         return;
       }
       lastTickAt = now;
 
-      log.debug("tick: group={}, active={}, ready={}", activeGroup, active, ready);
       if (controlStore.isPaused()) {
         notReadyStreak = 0;
         ws.disconnectAll();
         return;
       }
+
+      ensureAllTargetConnections();
+
+      boolean ready = active != null && ws.isReady(active);
+      log.debug("tick: group={}, active={}, ready={}", activeGroup, active, ready);
+
       if (!ready) {
         notReadyStreak++;
         log.warn("ready=false observed: group={}, active={}, streak={}, wsState={}",
             activeGroup, active, notReadyStreak, ws.readinessDebug());
+
         String found = findFirstAliveInRing(activeGroup, active);
         if (found != null) {
           if (!found.equals(active)) {
@@ -130,7 +132,7 @@ public class FailoverLoop {
                 log.info("not ready but alive, cooldown active: active={}, waitMs={}", active, cooldownLeft);
               } else {
                 log.info("not ready but alive, reconnecting current: {}, streak={}, wsState={}",
-                  active, notReadyStreak, ws.readinessDebug());
+                    active, notReadyStreak, ws.readinessDebug());
                 ws.connectForce(active);
                 lastSameTargetReconnectAt = now;
                 notReadyStreak = 0;
@@ -148,7 +150,7 @@ public class FailoverLoop {
       notReadyStreak = 0;
 
       long t0 = System.currentTimeMillis();
-      boolean ok = ws.pingBoth();
+      boolean ok = ws.pingBoth(active);
       long ms = System.currentTimeMillis() - t0;
 
       updateHealthStatus(active, ok);
@@ -170,10 +172,9 @@ public class FailoverLoop {
       }
       failCount = 0;
 
-      // upgrade (A2->A1 / E2->E1)
       String[] higher = higherPreferCandidates(activeGroup, active);
       if (higher.length > 0) {
-        String upUrl = probeFirstAliveByIds(higher);
+        String upUrl = firstAliveByIds(higher);
         if (upUrl != null) {
           recoverStable++;
           if (recoverStable >= RECOVER_STABLE_THRESHOLD) {
@@ -186,9 +187,8 @@ public class FailoverLoop {
         return;
       }
 
-      // recover (other group -> primary group)
       if (!isInRecover(activeGroup, targetIdOf(active))) {
-        String recoverTo = probeFirstAliveByIds(recoverOf(activeGroup));
+        String recoverTo = firstAliveByIds(recoverOf(activeGroup));
         if (recoverTo != null) {
           recoverStable++;
           if (recoverStable >= RECOVER_STABLE_THRESHOLD) {
@@ -211,6 +211,10 @@ public class FailoverLoop {
   public String getActiveUrl() { return active; }
   public String getActiveGroup() { return activeGroup; }
 
+  private void ensureAllTargetConnections() {
+    ws.connectAll(A1, A2, E1, E2);
+  }
+
   private void resetCounters() {
     failCount = 0;
     recoverStable = 0;
@@ -219,14 +223,14 @@ public class FailoverLoop {
   private String findFirstAliveInRing(String group, String curUrl) {
     String[] ring = ringOf(group);
 
-    if (probeAndLog(curUrl)) return curUrl;
+    if (isAliveAndLog(curUrl)) return curUrl;
 
     int idx = indexOf(ring, targetIdOf(curUrl));
     if (idx < 0) idx = 0;
 
     for (int i = 1; i < ring.length; i++) {
       String url = urlOf(ring[(idx + i) % ring.length]);
-      if (probeAndLog(url)) return url;
+      if (isAliveAndLog(url)) return url;
     }
     return null;
   }
@@ -284,22 +288,28 @@ public class FailoverLoop {
     return higher;
   }
 
-  private String probeFirstAliveByIds(String[] ids) {
+  private String firstAliveByIds(String[] ids) {
     for (String id : ids) {
       String url = urlOf(id);
-      if (url != null && probeAndLog(url)) return url;
+      if (isAliveAndLog(url)) return url;
     }
     return null;
   }
 
-  private boolean probeAndLog(String url) {
-    long t0 = System.currentTimeMillis();
-    boolean up = probe.probe(url);
-    long ms = System.currentTimeMillis() - t0;
+  private boolean isAliveAndLog(String url) {
+    if (url == null) {
+      return false;
+    }
 
+    if (!ws.isReady(url)) {
+      ws.connect(url);
+      updateHealthStatus(url, false);
+      return false;
+    }
+
+    boolean up = ws.pingBoth(url);
     updateHealthStatus(url, up);
-    log.debug("probe: url={}, up={}, ms={}", url, up, ms);
-
+    log.debug("session-check: url={}, up={}", url, up);
     return up;
   }
 
@@ -314,6 +324,20 @@ public class FailoverLoop {
     String[] parts = csv.split(",");
     for (int i = 0; i < parts.length; i++) parts[i] = parts[i].trim();
     return parts;
+  }
+
+  private String[] configuredIds(String[] ids) {
+    java.util.List<String> valid = new java.util.ArrayList<>();
+    for (String id : ids) {
+      if (id == null || id.isBlank()) {
+        continue;
+      }
+      String url = urlOf(id);
+      if (url != null && !url.isBlank()) {
+        valid.add(id.trim());
+      }
+    }
+    return valid.toArray(new String[0]);
   }
 
   private int indexOf(String[] arr, String v) {
@@ -353,7 +377,6 @@ public class FailoverLoop {
   }
 
   private void safeInsertEvent(FailoverEventLog log) {
-    // DB integration note: replace with site-specific persistence if needed.
     try { logMapper.insertFailoverEvent(log); } catch (Exception ignore) {}
   }
 
