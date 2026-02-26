@@ -82,7 +82,14 @@ public class GatewayWsClient {
     if (wsUrl == null || wsUrl.isBlank()) {
       return;
     }
-    this.currentUrl = wsUrl;
+    if (force || currentUrl == null || currentUrl.isBlank()) {
+      this.currentUrl = wsUrl;
+    }
+
+    SessionPair existing = sessions.get(wsUrl);
+    if (!force && isPairReady(existing)) {
+      return;
+    }
 
     long now = System.currentTimeMillis();
     long allowedAt = nextConnectAllowedAt.getOrDefault(wsUrl, 0L);
@@ -95,6 +102,9 @@ public class GatewayWsClient {
 
     connector.submit(() -> {
       try {
+        if (!force && isPairReady(sessions.get(wsUrl))) {
+          return;
+        }
         SessionPair old = sessions.remove(wsUrl);
         closePair(old);
         try {
@@ -483,6 +493,12 @@ public class GatewayWsClient {
     closeQuiet(pair.email);
     pair.pendingChat.set(null);
     pair.pendingEmail.set(null);
+  }
+
+  private static boolean isPairReady(SessionPair pair) {
+    return pair != null
+        && pair.chat != null && pair.chat.isOpen()
+        && pair.email != null && pair.email.isOpen();
   }
 
   private static final class SessionPair {

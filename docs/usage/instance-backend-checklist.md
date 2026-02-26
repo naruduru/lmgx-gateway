@@ -50,10 +50,12 @@ gateway:
     G2: E1,E2,A1,A2
 
   recover:
+    enabled: true
     G1: A1,A2
     G2: E1,E2
 
   prefer:
+    enabled: true
     G1: A1,A2
     G2: E1,E2
 
@@ -79,6 +81,13 @@ gateway:
 - 시작 후 `A1/A2/E1/E2` 전체 타겟 세션 유지 시도
 - 타겟별 chat/email 2세션 유지 (`HostKind` 분리)
 - failover는 `ring/recover/prefer` + 세션 상태 기반 판정
+
+`ring/recover/prefer` 요약:
+- `ring`: 장애 시 탐색 순서
+- `recover`: 안정화 후 복귀 가능한 목표군
+- `prefer`: 현재보다 우선순위가 높아 업그레이드 가능한 목표군
+- `recover.enabled`: recover 로직 사용 여부
+- `prefer.enabled`: prefer 로직 사용 여부
 
 ## 5) 메시지 규격
 

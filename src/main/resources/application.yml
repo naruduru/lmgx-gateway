@@ -18,10 +18,12 @@ gateway:
     G2: E1,E2,A1,A2
 
   recover:
+    enabled: true
     G1: A1,A2
     G2: E1,E2
 
   prefer:
+    enabled: true
     G1: A1,A2
     G2: E1,E2
   refer:

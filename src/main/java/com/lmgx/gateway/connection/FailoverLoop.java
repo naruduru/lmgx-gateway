@@ -34,6 +34,8 @@ public class FailoverLoop {
   private final String[] recoverG2;
   private final String[] preferG1;
   private final String[] preferG2;
+  private final boolean recoverEnabled;
+  private final boolean preferEnabled;
 
   private volatile String activeGroup = "G1";
   private volatile String active;
@@ -46,9 +48,11 @@ public class FailoverLoop {
   private static final int RECOVER_STABLE_THRESHOLD = 5;
   private static final int NOT_READY_THRESHOLD = 3;
   private static final long SAME_TARGET_RECONNECT_COOLDOWN_MS = 30_000L;
+  private static final long ENSURE_INTERVAL_MS = 10_000L;
 
   private int notReadyStreak = 0;
   private volatile long lastSameTargetReconnectAt = 0L;
+  private volatile long lastEnsureAt = 0L;
 
   public FailoverLoop(GatewayWsClient ws, GatewayLogMapper logMapper,
                       InstanceControlStore controlStore, Environment env) {
@@ -67,6 +71,8 @@ public class FailoverLoop {
     this.recoverG2 = configuredIds(parseIds(env.getProperty("gateway.recover.G2", "E1,E2")));
     this.preferG1 = configuredIds(parseIds(env.getProperty("gateway.prefer.G1", "A1,A2")));
     this.preferG2 = configuredIds(parseIds(env.getProperty("gateway.prefer.G2", "E1,E2")));
+    this.recoverEnabled = env.getProperty("gateway.recover.enabled", Boolean.class, true);
+    this.preferEnabled = env.getProperty("gateway.prefer.enabled", Boolean.class, true);
 
     String overrideGroup = env.getProperty("gateway.group.override", "G1");
     if ("G2".equalsIgnoreCase(overrideGroup)) {
@@ -78,12 +84,14 @@ public class FailoverLoop {
     this.sourceIp = resolveSourceIp(env.getProperty("gateway.source-ip"));
     String[] initialRing = ringOf(activeGroup);
     this.active = initialRing.length == 0 ? null : urlOf(initialRing[0]);
-    log.info("FailoverLoop init: group={}, active={}", activeGroup, active);
+    log.info("FailoverLoop init: group={}, active={}, recoverEnabled={}, preferEnabled={}",
+        activeGroup, active, recoverEnabled, preferEnabled);
   }
 
   @EventListener(ApplicationReadyEvent.class)
   public void onReady() {
     ensureAllTargetConnections();
+    lastEnsureAt = System.currentTimeMillis();
     if (this.active != null) {
       ws.connectForce(this.active);
     }
@@ -107,7 +115,10 @@ public class FailoverLoop {
         return;
       }
 
-      ensureAllTargetConnections();
+      if (now - lastEnsureAt >= ENSURE_INTERVAL_MS) {
+        ensureAllTargetConnections();
+        lastEnsureAt = now;
+      }
 
       boolean ready = active != null && ws.isReady(active);
       log.debug("tick: group={}, active={}, ready={}", activeGroup, active, ready);
@@ -172,33 +183,37 @@ public class FailoverLoop {
       }
       failCount = 0;
 
-      String[] higher = higherPreferCandidates(activeGroup, active);
-      if (higher.length > 0) {
-        String upUrl = firstAliveByIds(higher);
-        if (upUrl != null) {
-          recoverStable++;
-          if (recoverStable >= RECOVER_STABLE_THRESHOLD) {
-            switchTo(upUrl, "UPGRADE_STABLE");
-            resetCounters();
+      if (preferEnabled) {
+        String[] higher = higherPreferCandidates(activeGroup, active);
+        if (higher.length > 0) {
+          String upUrl = firstAliveByIds(higher);
+          if (upUrl != null) {
+            recoverStable++;
+            if (recoverStable >= RECOVER_STABLE_THRESHOLD) {
+              switchTo(upUrl, "UPGRADE_STABLE");
+              resetCounters();
+            }
+          } else {
+            recoverStable = 0;
           }
-        } else {
-          recoverStable = 0;
+          return;
         }
-        return;
       }
 
-      if (!isInRecover(activeGroup, targetIdOf(active))) {
-        String recoverTo = firstAliveByIds(recoverOf(activeGroup));
-        if (recoverTo != null) {
-          recoverStable++;
-          if (recoverStable >= RECOVER_STABLE_THRESHOLD) {
-            switchTo(recoverTo, "RECOVER_STABLE");
-            resetCounters();
+      if (recoverEnabled) {
+        if (!isInRecover(activeGroup, targetIdOf(active))) {
+          String recoverTo = firstAliveByIds(recoverOf(activeGroup));
+          if (recoverTo != null) {
+            recoverStable++;
+            if (recoverStable >= RECOVER_STABLE_THRESHOLD) {
+              switchTo(recoverTo, "RECOVER_STABLE");
+              resetCounters();
+            }
+          } else {
+            recoverStable = 0;
           }
-        } else {
-          recoverStable = 0;
+          return;
         }
-        return;
       }
 
       recoverStable = 0;
@@ -263,13 +278,13 @@ public class FailoverLoop {
     String from = targetIdOf(fromUrl);
     String to = targetIdOf(toUrl);
 
-    if (isInPrefer(group, from) && isInPrefer(group, to)) {
+    if (preferEnabled && isInPrefer(group, from) && isInPrefer(group, to)) {
       if (indexOf(preferOf(group), to) < indexOf(preferOf(group), from)) {
         return "UPGRADE";
       }
     }
 
-    if (!isInRecover(group, from) && isInRecover(group, to)) {
+    if (recoverEnabled && !isInRecover(group, from) && isInRecover(group, to)) {
       return "RECOVER";
     }
 

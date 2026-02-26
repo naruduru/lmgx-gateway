@@ -57,10 +57,12 @@ gateway:
     G2: E1,E2,A1,A2
 
   recover:
+    enabled: true
     G1: A1,A2
     G2: E1,E2
 
   prefer:
+    enabled: true
     G1: A1,A2
     G2: E1,E2
 
@@ -77,6 +79,24 @@ gateway:
 - 앱 시작 후 `A1/A2/E1/E2` 전체 타겟에 대해 chat/email 세션을 유지 시도합니다.
 - 각 타겟은 chat/email 2세션으로 동작합니다. (`HostKind` C/I 분리)
 - failover/ring/recover/prefer 판정은 유지 세션 상태(`isReady(url)`, `pingBoth(url)`) 기준으로 수행합니다.
+
+### ring / recover / prefer 의미
+
+- `ring`: 장애 시 순차 탐색 우선순위입니다.
+- `recover`: 정상화 시 되돌아갈 수 있는 목표군입니다.
+- `prefer`: 현재보다 더 높은 우선순위로 "승급" 가능한 목표군입니다.
+- `recover.enabled`: `false`면 recover 복귀 로직을 수행하지 않습니다.
+- `prefer.enabled`: `false`면 prefer 업그레이드 로직을 수행하지 않습니다.
+
+기본값 예시:
+- `ring.G1=A1,A2,E1,E2`
+- `recover.G1=A1,A2`
+- `prefer.G1=A1,A2`
+
+동작 예시(G1 기준):
+1. 현재 `A1` 장애 시 `ring` 순서대로 `A2 -> E1 -> E2` 탐색 후 첫 정상 타겟으로 전환
+2. `E1`에서 운영 중이고 `A1`이 다시 안정되면 `prefer/recover` 조건 충족 시 `A1`로 복귀
+3. 같은 그룹 내에서도 `prefer` 앞쪽 타겟이 안정적으로 살아나면 업그레이드 전환
 
 ## 5) 전송 규격
 
