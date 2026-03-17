@@ -12,4 +12,7 @@ public interface UqMessageService {
   void onFailure(Map<String, Object> message);
 
   void onComplete(Map<String, Object> message);
+
+  default void onRequestTimeout(Map<String, Object> message) {
+  }
 }

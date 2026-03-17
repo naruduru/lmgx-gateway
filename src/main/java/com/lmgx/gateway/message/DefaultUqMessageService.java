@@ -34,4 +34,9 @@ public class DefaultUqMessageService implements UqMessageService {
   public void onComplete(Map<String, Object> message) {
     log.info("service complete: {}", message);
   }
+
+  @Override
+  public void onRequestTimeout(Map<String, Object> message) {
+    log.warn("service request timeout: {}", message);
+  }
 }

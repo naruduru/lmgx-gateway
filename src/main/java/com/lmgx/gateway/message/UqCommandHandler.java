@@ -13,9 +13,11 @@ import java.util.Map;
 public class UqCommandHandler implements IncomingCommandHandler {
   private static final Logger log = LoggerFactory.getLogger(UqCommandHandler.class);
   private final UqMessageService messageService;
+  private final UqRequestTracker requestTracker;
 
-  public UqCommandHandler(UqMessageService messageService) {
+  public UqCommandHandler(UqMessageService messageService, UqRequestTracker requestTracker) {
     this.messageService = messageService;
+    this.requestTracker = requestTracker;
   }
 
   @Override
@@ -29,6 +31,7 @@ public class UqCommandHandler implements IncomingCommandHandler {
     if (command == null) {
       return;
     }
+    requestTracker.complete(message);
     log.debug("uq recv: command={}, channel={}, payload={}", command, channel, message);
     switch (command) {
       case "1538" -> handleRouteRes(message);

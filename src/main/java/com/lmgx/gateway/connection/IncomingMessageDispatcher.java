@@ -1,14 +1,26 @@
 package com.lmgx.gateway.connection;
 
+import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Component
 public class IncomingMessageDispatcher {
+    private static final Logger log = LoggerFactory.getLogger(IncomingMessageDispatcher.class);
+
     private final Map<String, IncomingCommandHandler> handlers;
+    private final ExecutorService dispatcherExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "gw-incoming-dispatcher");
+        t.setDaemon(true);
+        return t;
+    });
 
     public IncomingMessageDispatcher(List<IncomingCommandHandler> handlerList) {
         Map<String, IncomingCommandHandler> map = new HashMap<>();
@@ -37,7 +49,14 @@ public class IncomingMessageDispatcher {
         if (handler == null) {
             return;
         }
-        handler.handle(channel, message);
+        dispatcherExecutor.execute(() -> {
+            try {
+                handler.handle(channel, message);
+            } catch (Exception e) {
+                log.warn("incoming handler failed: command={}, channel={}, cause={}",
+                    command, channel, e.getMessage(), e);
+            }
+        });
     }
 
     private static String commandOf(Map<String, Object> message) {
@@ -49,5 +68,10 @@ public class IncomingMessageDispatcher {
             return null;
         }
         return String.valueOf(cmdObj);
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        dispatcherExecutor.shutdownNow();
     }
 }

@@ -9,9 +9,11 @@ import java.util.Map;
 @Service
 public class UqSender {
   private final MessageSender sender;
+  private final UqRequestTracker requestTracker;
 
-  public UqSender(MessageSender sender) {
+  public UqSender(MessageSender sender, UqRequestTracker requestTracker) {
     this.sender = sender;
+    this.requestTracker = requestTracker;
   }
 
   public String send(MessageSender.Channel channel, Map<String, Object> payload) throws Exception {
@@ -30,8 +32,13 @@ public class UqSender {
     if (command == null) {
       throw new IllegalArgumentException("payload.Command is required");
     }
-    data.put("Command", normalizeCommand(command));
-    return sender.send(channel, data);
+    int normalizedCommand = normalizeCommand(command);
+    data.put("Command", normalizedCommand);
+    String requestId = sender.send(channel, data);
+    if (isTrackedCommand(normalizedCommand)) {
+      requestTracker.arm(normalizedCommand, data);
+    }
+    return requestId;
   }
 
   public void sendRoute(Map<String, Object> payload) throws Exception {
@@ -61,6 +68,7 @@ public class UqSender {
     }
     data.put("Command", command);
     sender.send(channel, data);
+    requestTracker.arm(command, data);
   }
 
   private static int normalizeCommand(Object command) {
@@ -72,5 +80,13 @@ public class UqSender {
     } catch (Exception e) {
       throw new IllegalArgumentException("payload.Command must be numeric");
     }
+  }
+
+  private static boolean isTrackedCommand(int command) {
+    return command == 1537
+        || command == 1539
+        || command == 1541
+        || command == 1543
+        || command == 1545;
   }
 }
