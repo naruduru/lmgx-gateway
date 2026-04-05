@@ -36,10 +36,13 @@ public class GatewayWsClient {
     return t;
   });
 
-  private final ConcurrentMap<String, SessionPair> sessions = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, WebSocketSession> chatSessions = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, WebSocketSession> emailSessions = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingChat = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingEmail = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, Long> nextConnectAllowedAt = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, AtomicInteger> connectFailures = new ConcurrentHashMap<>();
-  private final java.util.Set<String> connectingUrls = ConcurrentHashMap.newKeySet();
+  private final java.util.Set<String> connectingChannels = ConcurrentHashMap.newKeySet();
 
   private volatile String currentUrl;
   private volatile boolean lastPingOk = false;
@@ -62,11 +65,29 @@ public class GatewayWsClient {
   }
 
   public void connect(String wsUrl) {
-    connectInternal(wsUrl, false);
+    connectChat(wsUrl);
+    connectEmail(wsUrl);
   }
 
   public void connectForce(String wsUrl) {
-    connectInternal(wsUrl, true);
+    connectChatForce(wsUrl);
+    connectEmailForce(wsUrl);
+  }
+
+  public void connectChat(String wsUrl) {
+    connectChannelInternal(wsUrl, MessageSender.Channel.CHAT, false);
+  }
+
+  public void connectEmail(String wsUrl) {
+    connectChannelInternal(wsUrl, MessageSender.Channel.EMAIL, false);
+  }
+
+  public void connectChatForce(String wsUrl) {
+    connectChannelInternal(wsUrl, MessageSender.Channel.CHAT, true);
+  }
+
+  public void connectEmailForce(String wsUrl) {
+    connectChannelInternal(wsUrl, MessageSender.Channel.EMAIL, true);
   }
 
   public void connectAll(String... urls) {
@@ -78,58 +99,63 @@ public class GatewayWsClient {
     }
   }
 
-  private void connectInternal(String wsUrl, boolean force) {
-    if (wsUrl == null || wsUrl.isBlank()) {
+  private void connectChannelInternal(String wsUrl, MessageSender.Channel channel, boolean force) {
+    if (wsUrl == null || wsUrl.isBlank() || channel == null) {
       return;
     }
     if (force || currentUrl == null || currentUrl.isBlank()) {
       this.currentUrl = wsUrl;
     }
 
-    SessionPair existing = sessions.get(wsUrl);
-    if (!force && isPairReady(existing)) {
+    if (!force && isChannelOpen(wsUrl, channel)) {
       return;
     }
 
+    String key = connectKey(wsUrl, channel);
     long now = System.currentTimeMillis();
-    long allowedAt = nextConnectAllowedAt.getOrDefault(wsUrl, 0L);
+    long allowedAt = nextConnectAllowedAt.getOrDefault(key, 0L);
     if (!force && now < allowedAt) {
       return;
     }
-    if (!connectingUrls.add(wsUrl)) {
+    if (!connectingChannels.add(key)) {
       return;
     }
 
     connector.submit(() -> {
       try {
-        if (!force && isPairReady(sessions.get(wsUrl))) {
+        if (!force && isChannelOpen(wsUrl, channel)) {
           return;
         }
-        SessionPair old = sessions.remove(wsUrl);
-        closePair(old);
+
+        WebSocketSession old = sessionOf(wsUrl, channel);
+        if (force || old == null || !old.isOpen()) {
+          closeQuiet(old);
+          sessionMap(channel).remove(wsUrl, old);
+        }
+
         try {
-          log.info("connect: {}", wsUrl);
-          AtomicReference<CompletableFuture<Void>> pendingChat = new AtomicReference<>();
-          AtomicReference<CompletableFuture<Void>> pendingEmail = new AtomicReference<>();
-          WebSocketSession chat = open(wsUrl, "C", pendingChat, MessageSender.Channel.CHAT);
-          WebSocketSession email = open(wsUrl, "I", pendingEmail, MessageSender.Channel.EMAIL);
-          sessions.put(wsUrl, new SessionPair(chat, email, pendingChat, pendingEmail));
-          connectFailures.computeIfAbsent(wsUrl, k -> new AtomicInteger()).set(0);
-          nextConnectAllowedAt.put(wsUrl, 0L);
+          log.info("connect: url={}, channel={}", wsUrl, channel);
+          AtomicReference<CompletableFuture<Void>> pendingRef = pendingRefOf(wsUrl, channel);
+          WebSocketSession opened = open(wsUrl, channelType(channel), pendingRef, channel);
+          WebSocketSession previous = sessionMap(channel).put(wsUrl, opened);
+          if (previous != null && previous != opened) {
+            closeQuiet(previous);
+          }
+          connectFailures.computeIfAbsent(key, k -> new AtomicInteger()).set(0);
+          nextConnectAllowedAt.put(key, 0L);
         } catch (Exception e) {
-          int failures = connectFailures.computeIfAbsent(wsUrl, k -> new AtomicInteger()).incrementAndGet();
+          int failures = connectFailures.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
           long backoff = calcBackoffMs(failures);
-          nextConnectAllowedAt.put(wsUrl, System.currentTimeMillis() + backoff);
-          log.warn("connect failed: url={}, cause={}", wsUrl, describe(e), e);
+          nextConnectAllowedAt.put(key, System.currentTimeMillis() + backoff);
+          log.warn("connect failed: url={}, channel={}, cause={}", wsUrl, channel, describe(e), e);
         }
       } finally {
-        connectingUrls.remove(wsUrl);
+        connectingChannels.remove(key);
       }
     });
   }
 
   private long calcBackoffMs(int failures) {
-    int capped = Math.min(failures, 9);
     return 1000L;
   }
 
@@ -138,7 +164,8 @@ public class GatewayWsClient {
   public long lastPingAt() { return lastPingAt; }
   public boolean lastPingOk() { return lastPingOk; }
   public int pingFailures() { return pingFailures.get(); }
-  public boolean isConnecting() { return !connectingUrls.isEmpty(); }
+  public boolean isConnecting() { return !connectingChannels.isEmpty(); }
+
   public String readinessDebug() {
     long age = lastPingAt <= 0 ? -1 : (System.currentTimeMillis() - lastPingAt);
     return "chatOpen=" + isChatOpen()
@@ -156,13 +183,11 @@ public class GatewayWsClient {
   public boolean isHealthy() { return isHealthy(currentUrl); }
 
   public boolean isChatOpen(String url) {
-    SessionPair pair = sessions.get(url);
-    return pair != null && pair.chat != null && pair.chat.isOpen();
+    return isChannelOpen(url, MessageSender.Channel.CHAT);
   }
 
   public boolean isEmailOpen(String url) {
-    SessionPair pair = sessions.get(url);
-    return pair != null && pair.email != null && pair.email.isOpen();
+    return isChannelOpen(url, MessageSender.Channel.EMAIL);
   }
 
   public boolean isReady(String url) {
@@ -188,10 +213,24 @@ public class GatewayWsClient {
   }
 
   public void disconnectAll() {
-    for (SessionPair pair : sessions.values()) {
-      closePair(pair);
+    for (WebSocketSession session : chatSessions.values()) {
+      closeQuiet(session);
     }
-    sessions.clear();
+    for (WebSocketSession session : emailSessions.values()) {
+      closeQuiet(session);
+    }
+    chatSessions.clear();
+    emailSessions.clear();
+    pendingChat.values().forEach(ref -> ref.set(null));
+    pendingEmail.values().forEach(ref -> ref.set(null));
+  }
+
+  public void disconnectChat(String url) {
+    disconnectChannel(url, MessageSender.Channel.CHAT);
+  }
+
+  public void disconnectEmail(String url) {
+    disconnectChannel(url, MessageSender.Channel.EMAIL);
   }
 
   public boolean pingChat() {
@@ -207,23 +246,20 @@ public class GatewayWsClient {
   }
 
   public boolean pingChat(String url) {
-    SessionPair pair = sessions.get(url);
-    boolean ok = pair != null && pingSession(pair.chat, pair.pendingChat, "C", url);
-    updatePingStateFor(url, ok);
+    boolean ok = pingChannel(url, MessageSender.Channel.CHAT);
+    updatePingStateFor(url, ok && isEmailOpen(url));
     return ok;
   }
 
   public boolean pingEmail(String url) {
-    SessionPair pair = sessions.get(url);
-    boolean ok = pair != null && pingSession(pair.email, pair.pendingEmail, "I", url);
-    updatePingStateFor(url, ok);
+    boolean ok = pingChannel(url, MessageSender.Channel.EMAIL);
+    updatePingStateFor(url, ok && isChatOpen(url));
     return ok;
   }
 
   public boolean pingBoth(String url) {
-    SessionPair pair = sessions.get(url);
-    boolean chatOk = pair != null && pingSession(pair.chat, pair.pendingChat, "C", url);
-    boolean emailOk = pair != null && pingSession(pair.email, pair.pendingEmail, "I", url);
+    boolean chatOk = pingChannel(url, MessageSender.Channel.CHAT);
+    boolean emailOk = pingChannel(url, MessageSender.Channel.EMAIL);
     boolean ok = chatOk && emailOk;
     updatePingStateFor(url, ok);
     log.debug("ping both: url={}, chatOk={}, emailOk={}, overallOk={}", url, chatOk, emailOk, ok);
@@ -239,13 +275,11 @@ public class GatewayWsClient {
   }
 
   public String sendChat(String url, Map<String, Object> payload) throws Exception {
-    SessionPair pair = sessions.get(url);
-    return send(pair != null ? pair.chat : null, payload, url);
+    return send(sessionOf(url, MessageSender.Channel.CHAT), payload, url);
   }
 
   public String sendEmail(String url, Map<String, Object> payload) throws Exception {
-    SessionPair pair = sessions.get(url);
-    return send(pair != null ? pair.email : null, payload, url);
+    return send(sessionOf(url, MessageSender.Channel.EMAIL), payload, url);
   }
 
   private String send(WebSocketSession s, Map<String, Object> payload, String url) throws Exception {
@@ -358,6 +392,15 @@ public class GatewayWsClient {
     }
   }
 
+  private boolean pingChannel(String url, MessageSender.Channel channel) {
+    return pingSession(
+        sessionOf(url, channel),
+        pendingRefOf(url, channel),
+        channelType(channel),
+        url
+    );
+  }
+
   private boolean pingSession(WebSocketSession session,
                               AtomicReference<CompletableFuture<Void>> pendingRef,
                               String type,
@@ -422,6 +465,45 @@ public class GatewayWsClient {
     }
   }
 
+  private boolean isChannelOpen(String url, MessageSender.Channel channel) {
+    WebSocketSession session = sessionOf(url, channel);
+    return session != null && session.isOpen();
+  }
+
+  private void disconnectChannel(String url, MessageSender.Channel channel) {
+    if (url == null) {
+      return;
+    }
+    WebSocketSession session = sessionMap(channel).remove(url);
+    closeQuiet(session);
+    pendingRefOf(url, channel).set(null);
+  }
+
+  private WebSocketSession sessionOf(String url, MessageSender.Channel channel) {
+    if (url == null) {
+      return null;
+    }
+    return sessionMap(channel).get(url);
+  }
+
+  private ConcurrentMap<String, WebSocketSession> sessionMap(MessageSender.Channel channel) {
+    return channel == MessageSender.Channel.CHAT ? chatSessions : emailSessions;
+  }
+
+  private AtomicReference<CompletableFuture<Void>> pendingRefOf(String url, MessageSender.Channel channel) {
+    ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> map =
+        channel == MessageSender.Channel.CHAT ? pendingChat : pendingEmail;
+    return map.computeIfAbsent(url, key -> new AtomicReference<>());
+  }
+
+  private static String connectKey(String url, MessageSender.Channel channel) {
+    return url + "|" + channel.name();
+  }
+
+  private static String channelType(MessageSender.Channel channel) {
+    return channel == MessageSender.Channel.EMAIL ? "I" : "C";
+  }
+
   private static int readInt(Map<String, Object> msg, String key, int defaultValue) {
     Object v = msg.get(key);
     if (v == null) {
@@ -482,39 +564,6 @@ public class GatewayWsClient {
   private static void closeQuiet(WebSocketSession s) {
     if (s != null && s.isOpen()) {
       try { s.close(); } catch (Exception ignore) {}
-    }
-  }
-
-  private static void closePair(SessionPair pair) {
-    if (pair == null) {
-      return;
-    }
-    closeQuiet(pair.chat);
-    closeQuiet(pair.email);
-    pair.pendingChat.set(null);
-    pair.pendingEmail.set(null);
-  }
-
-  private static boolean isPairReady(SessionPair pair) {
-    return pair != null
-        && pair.chat != null && pair.chat.isOpen()
-        && pair.email != null && pair.email.isOpen();
-  }
-
-  private static final class SessionPair {
-    private final WebSocketSession chat;
-    private final WebSocketSession email;
-    private final AtomicReference<CompletableFuture<Void>> pendingChat;
-    private final AtomicReference<CompletableFuture<Void>> pendingEmail;
-
-    private SessionPair(WebSocketSession chat,
-                        WebSocketSession email,
-                        AtomicReference<CompletableFuture<Void>> pendingChat,
-                        AtomicReference<CompletableFuture<Void>> pendingEmail) {
-      this.chat = chat;
-      this.email = email;
-      this.pendingChat = pendingChat;
-      this.pendingEmail = pendingEmail;
     }
   }
 }

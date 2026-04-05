@@ -47,11 +47,13 @@ public class FailoverLoop {
   private static final int FAIL_THRESHOLD = 2;
   private static final int RECOVER_STABLE_THRESHOLD = 5;
   private static final int NOT_READY_THRESHOLD = 3;
-  private static final long SAME_TARGET_RECONNECT_COOLDOWN_MS = 30_000L;
+  private static final long CHAT_RECONNECT_COOLDOWN_MS = 30_000L;
+  private static final long EMAIL_RECONNECT_COOLDOWN_MS = 30_000L;
   private static final long ENSURE_INTERVAL_MS = 10_000L;
 
   private int notReadyStreak = 0;
-  private volatile long lastSameTargetReconnectAt = 0L;
+  private volatile long lastChatReconnectAt = 0L;
+  private volatile long lastEmailReconnectAt = 0L;
   private volatile long lastEnsureAt = 0L;
 
   public FailoverLoop(GatewayWsClient ws, GatewayLogMapper logMapper,
@@ -120,12 +122,13 @@ public class FailoverLoop {
         lastEnsureAt = now;
       }
 
-      boolean ready = active != null && ws.isReady(active);
-      log.debug("tick: group={}, active={}, ready={}", activeGroup, active, ready);
+      boolean chatOk = checkAndRepairChannel(active, MessageSender.Channel.CHAT, now);
+      boolean emailOk = checkAndRepairChannel(active, MessageSender.Channel.EMAIL, now);
+      log.debug("tick: group={}, active={}, chatOk={}, emailOk={}", activeGroup, active, chatOk, emailOk);
 
-      if (!ready) {
+      if (!chatOk && !emailOk) {
         notReadyStreak++;
-        log.warn("ready=false observed: group={}, active={}, streak={}, wsState={}",
+        log.warn("both channels not ready observed: group={}, active={}, streak={}, wsState={}",
             activeGroup, active, notReadyStreak, ws.readinessDebug());
 
         String found = findFirstAliveInRing(activeGroup, active);
@@ -135,53 +138,33 @@ public class FailoverLoop {
             switchTo(found, "NOT_READY_RING_SCAN");
           } else {
             if (notReadyStreak < NOT_READY_THRESHOLD) {
-              log.info("not ready but alive, waiting threshold: active={}, streak={}/{}",
+              log.info("target not ready but alive, waiting threshold: active={}, streak={}/{}",
                   active, notReadyStreak, NOT_READY_THRESHOLD);
             } else {
-              long cooldownLeft = SAME_TARGET_RECONNECT_COOLDOWN_MS - (now - lastSameTargetReconnectAt);
-              if (cooldownLeft > 0) {
-                log.info("not ready but alive, cooldown active: active={}, waitMs={}", active, cooldownLeft);
-              } else {
-                log.info("not ready but alive, reconnecting current: {}, streak={}, wsState={}",
-                    active, notReadyStreak, ws.readinessDebug());
-                ws.connectForce(active);
-                lastSameTargetReconnectAt = now;
-                notReadyStreak = 0;
-              }
+              log.info("target not ready but alive, reconnecting both channels: {}, streak={}, wsState={}",
+                  active, notReadyStreak, ws.readinessDebug());
+              ws.connectForce(active);
+              lastChatReconnectAt = now;
+              lastEmailReconnectAt = now;
+              notReadyStreak = 0;
             }
           }
         } else {
           notReadyStreak = 0;
-          log.warn("No alive target found in ring, reconnecting current: {}", active);
+          log.warn("No alive target found in ring, reconnecting both channels on current: {}", active);
           ws.connect(active);
         }
         return;
       }
 
       notReadyStreak = 0;
+      failCount = 0;
+      updateHealthStatus(active, true);
 
-      long t0 = System.currentTimeMillis();
-      boolean ok = ws.pingBoth(active);
-      long ms = System.currentTimeMillis() - t0;
-
-      updateHealthStatus(active, ok);
-      log.debug("ping: ok={}, ms={}, active={}", ok, ms, active);
-
-      if (!ok) {
-        failCount++;
-        if (failCount >= FAIL_THRESHOLD) {
-          String found = findFirstAliveInRing(activeGroup, active);
-          if (found != null) {
-            switchTo(found, "PING_FAIL_RING_SCAN");
-          } else {
-            log.warn("PING fail, no alive target found in ring, reconnecting: {}", active);
-            ws.connect(active);
-          }
-          resetCounters();
-        }
+      if (!(chatOk && emailOk)) {
+        recoverStable = 0;
         return;
       }
-      failCount = 0;
 
       if (preferEnabled) {
         String[] higher = higherPreferCandidates(activeGroup, active);
@@ -316,16 +299,59 @@ public class FailoverLoop {
       return false;
     }
 
-    if (!ws.isReady(url)) {
-      ws.connect(url);
-      updateHealthStatus(url, false);
+    boolean chatUp = evaluateChannelAvailability(url, MessageSender.Channel.CHAT);
+    boolean emailUp = evaluateChannelAvailability(url, MessageSender.Channel.EMAIL);
+    boolean up = chatUp || emailUp;
+    updateHealthStatus(url, up);
+    log.debug("session-check: url={}, chatUp={}, emailUp={}, up={}", url, chatUp, emailUp, up);
+    return up;
+  }
+
+  private boolean checkAndRepairChannel(String url, MessageSender.Channel channel, long now) {
+    if (url == null) {
       return false;
     }
 
-    boolean up = ws.pingBoth(url);
-    updateHealthStatus(url, up);
-    log.debug("session-check: url={}, up={}", url, up);
-    return up;
+    boolean open = channel == MessageSender.Channel.CHAT ? ws.isChatOpen(url) : ws.isEmailOpen(url);
+    if (open) {
+      boolean pingOk = channel == MessageSender.Channel.CHAT ? ws.pingChat(url) : ws.pingEmail(url);
+      if (pingOk) {
+        return true;
+      }
+    }
+
+    long cooldownMs = channel == MessageSender.Channel.CHAT ? CHAT_RECONNECT_COOLDOWN_MS : EMAIL_RECONNECT_COOLDOWN_MS;
+    long lastReconnectAt = channel == MessageSender.Channel.CHAT ? lastChatReconnectAt : lastEmailReconnectAt;
+    long cooldownLeft = cooldownMs - (now - lastReconnectAt);
+    if (cooldownLeft > 0) {
+      log.info("{} not ready but cooldown active: active={}, waitMs={}",
+          channel.name().toLowerCase(), url, cooldownLeft);
+      return false;
+    }
+
+    log.warn("{} not ready observed: active={}, wsState={}",
+        channel.name().toLowerCase(), url, ws.readinessDebug());
+    if (channel == MessageSender.Channel.CHAT) {
+      ws.connectChatForce(url);
+      lastChatReconnectAt = now;
+    } else {
+      ws.connectEmailForce(url);
+      lastEmailReconnectAt = now;
+    }
+    return false;
+  }
+
+  private boolean evaluateChannelAvailability(String url, MessageSender.Channel channel) {
+    boolean open = channel == MessageSender.Channel.CHAT ? ws.isChatOpen(url) : ws.isEmailOpen(url);
+    if (!open) {
+      if (channel == MessageSender.Channel.CHAT) {
+        ws.connectChat(url);
+      } else {
+        ws.connectEmail(url);
+      }
+      return false;
+    }
+    return channel == MessageSender.Channel.CHAT ? ws.pingChat(url) : ws.pingEmail(url);
   }
 
   private String[] ringOf(String g) { return "G2".equals(g) ? ringG2 : ringG1; }
