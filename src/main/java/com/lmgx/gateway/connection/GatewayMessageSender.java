@@ -7,9 +7,11 @@ import java.util.Map;
 @Component
 public class GatewayMessageSender implements MessageSender {
     private final GatewayWsClient ws;
+    private final FailoverLoop failover;
 
-    public GatewayMessageSender(GatewayWsClient ws) {
+    public GatewayMessageSender(GatewayWsClient ws, FailoverLoop failover) {
         this.ws = ws;
+        this.failover = failover;
     }
 
     @Override
@@ -17,9 +19,10 @@ public class GatewayMessageSender implements MessageSender {
         if (channel == null) {
             throw new IllegalArgumentException("channel is required");
         }
+        String url = failover.ensureCommandTarget(channel);
         return switch (channel) {
-            case CHAT -> ws.sendChat(payload);
-            case EMAIL -> ws.sendEmail(payload);
+            case CHAT -> ws.sendChat(url, payload);
+            case EMAIL -> ws.sendEmail(url, payload);
         };
     }
 }

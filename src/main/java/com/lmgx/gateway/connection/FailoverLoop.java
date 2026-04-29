@@ -124,35 +124,47 @@ public class FailoverLoop {
 
       boolean chatOk = checkAndRepairChannel(active, MessageSender.Channel.CHAT, now);
       boolean emailOk = checkAndRepairChannel(active, MessageSender.Channel.EMAIL, now);
-      log.debug("tick: group={}, active={}, chatOk={}, emailOk={}", activeGroup, active, chatOk, emailOk);
+      boolean haActive = ws.isHaActive(active);
+      log.debug("tick: group={}, active={}, chatOk={}, emailOk={}, haActive={}",
+          activeGroup, active, chatOk, emailOk, haActive);
 
-      if (!chatOk && !emailOk) {
+      if (!(chatOk && emailOk && haActive)) {
         notReadyStreak++;
-        log.warn("both channels not ready observed: group={}, active={}, streak={}, wsState={}",
-            activeGroup, active, notReadyStreak, ws.readinessDebug());
+        log.warn("target not command-routable observed: group={}, active={}, streak={}, haState={}, wsState={}",
+            activeGroup, active, notReadyStreak, ws.haStateOf(active), ws.readinessDebug());
 
-        String found = findFirstAliveInRing(activeGroup, active);
+        String found = findFirstCommandRoutableInRing(activeGroup, active);
         if (found != null) {
           if (!found.equals(active)) {
             notReadyStreak = 0;
-            switchTo(found, "NOT_READY_RING_SCAN");
+            switchTo(found, haActive ? "NOT_READY_RING_SCAN" : "HA_STANDBY_RING_SCAN");
           } else {
             if (notReadyStreak < NOT_READY_THRESHOLD) {
-              log.info("target not ready but alive, waiting threshold: active={}, streak={}/{}",
-                  active, notReadyStreak, NOT_READY_THRESHOLD);
+              log.info("target not command-routable yet, waiting threshold: active={}, streak={}/{}, haState={}",
+                  active, notReadyStreak, NOT_READY_THRESHOLD, ws.haStateOf(active));
             } else {
-              log.info("target not ready but alive, reconnecting both channels: {}, streak={}, wsState={}",
-                  active, notReadyStreak, ws.readinessDebug());
-              ws.connectForce(active);
-              lastChatReconnectAt = now;
-              lastEmailReconnectAt = now;
+              if (!haActive) {
+                log.info("target heartbeat alive but standby, holding connections: active={}, haState={}, streak={}",
+                    active, ws.haStateOf(active), notReadyStreak);
+              } else {
+                log.info("target not ready but alive, reconnecting both channels: {}, streak={}, wsState={}",
+                    active, notReadyStreak, ws.readinessDebug());
+                ws.connectForce(active);
+                lastChatReconnectAt = now;
+                lastEmailReconnectAt = now;
+              }
               notReadyStreak = 0;
             }
           }
         } else {
           notReadyStreak = 0;
-          log.warn("No alive target found in ring, reconnecting both channels on current: {}", active);
-          ws.connect(active);
+          if (haActive) {
+            log.warn("No command-routable target found in ring, reconnecting both channels on current: {}", active);
+            ws.connect(active);
+          } else {
+            log.warn("No command-routable target found in ring, waiting for HA active target: group={}, active={}, haState={}",
+                activeGroup, active, ws.haStateOf(active));
+          }
         }
         return;
       }
@@ -218,17 +230,35 @@ public class FailoverLoop {
     recoverStable = 0;
   }
 
-  private String findFirstAliveInRing(String group, String curUrl) {
+  public synchronized String ensureCommandTarget(MessageSender.Channel channel) {
+    String current = this.active;
+    if (ws.isCommandRoutable(current)) {
+      return current;
+    }
+
+    String found = findFirstCommandRoutableInRing(activeGroup, current);
+    if (found != null) {
+      if (!found.equals(current)) {
+        switchTo(found, "SEND_GUARD_SWITCH");
+      }
+      return found;
+    }
+
+    throw new IllegalStateException("no command-routable target: group=" + activeGroup
+        + ", channel=" + channel + ", active=" + current + ", haState=" + ws.haStateOf(current));
+  }
+
+  private String findFirstCommandRoutableInRing(String group, String curUrl) {
     String[] ring = ringOf(group);
 
-    if (isAliveAndLog(curUrl)) return curUrl;
+    if (isCommandRoutableAndLog(curUrl)) return curUrl;
 
     int idx = indexOf(ring, targetIdOf(curUrl));
     if (idx < 0) idx = 0;
 
     for (int i = 1; i < ring.length; i++) {
       String url = urlOf(ring[(idx + i) % ring.length]);
-      if (isAliveAndLog(url)) return url;
+      if (isCommandRoutableAndLog(url)) return url;
     }
     return null;
   }
@@ -289,22 +319,24 @@ public class FailoverLoop {
   private String firstAliveByIds(String[] ids) {
     for (String id : ids) {
       String url = urlOf(id);
-      if (isAliveAndLog(url)) return url;
+      if (isCommandRoutableAndLog(url)) return url;
     }
     return null;
   }
 
-  private boolean isAliveAndLog(String url) {
+  private boolean isCommandRoutableAndLog(String url) {
     if (url == null) {
       return false;
     }
 
     boolean chatUp = evaluateChannelAvailability(url, MessageSender.Channel.CHAT);
     boolean emailUp = evaluateChannelAvailability(url, MessageSender.Channel.EMAIL);
-    boolean up = chatUp || emailUp;
-    updateHealthStatus(url, up);
-    log.debug("session-check: url={}, chatUp={}, emailUp={}, up={}", url, chatUp, emailUp, up);
-    return up;
+    boolean haActive = ws.isHaActive(url);
+    boolean routable = chatUp && emailUp && haActive;
+    updateHealthStatus(url, routable);
+    log.debug("session-check: url={}, chatUp={}, emailUp={}, haState={}, routable={}",
+        url, chatUp, emailUp, ws.haStateOf(url), routable);
+    return routable;
   }
 
   private boolean checkAndRepairChannel(String url, MessageSender.Channel channel, long now) {

@@ -40,6 +40,7 @@ public class GatewayWsClient {
   private final ConcurrentMap<String, WebSocketSession> emailSessions = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingChat = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingEmail = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, Integer> haStates = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, Long> nextConnectAllowedAt = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, AtomicInteger> connectFailures = new ConcurrentHashMap<>();
   private final java.util.Set<String> connectingChannels = ConcurrentHashMap.newKeySet();
@@ -172,6 +173,7 @@ public class GatewayWsClient {
         + ", emailOpen=" + isEmailOpen()
         + ", connecting=" + isConnecting()
         + ", currentUrl=" + currentUrl
+        + ", currentHaState=" + haStateOf(currentUrl)
         + ", lastPingOk=" + lastPingOk
         + ", pingFailures=" + pingFailures.get()
         + ", pingAgeMs=" + age;
@@ -195,13 +197,28 @@ public class GatewayWsClient {
   }
 
   public boolean isHealthy(String url) {
-    if (!isReady(url)) {
+    if (!isCommandRoutable(url)) {
       return false;
     }
     if (url != null && url.equals(currentUrl)) {
       return isPingHealthy();
     }
     return true;
+  }
+
+  public int haStateOf(String url) {
+    if (url == null) {
+      return DEFAULT_HA_STATE;
+    }
+    return haStates.getOrDefault(url, DEFAULT_HA_STATE);
+  }
+
+  public boolean isHaActive(String url) {
+    return haStateOf(url) == 1;
+  }
+
+  public boolean isCommandRoutable(String url) {
+    return isReady(url) && isHaActive(url);
   }
 
   public boolean isPingHealthy() {
@@ -221,6 +238,7 @@ public class GatewayWsClient {
     }
     chatSessions.clear();
     emailSessions.clear();
+    haStates.clear();
     pendingChat.values().forEach(ref -> ref.set(null));
     pendingEmail.values().forEach(ref -> ref.set(null));
   }
@@ -342,6 +360,7 @@ public class GatewayWsClient {
             try {
               hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
               haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
+              haStates.put(url, haState);
               log.debug("init recv: hbPeriodSec={}, haState={}, type={}", hbPeriodSec, haState, type);
               if (!sendJson(session, Map.of(
                   "Command", 2,
@@ -362,6 +381,8 @@ public class GatewayWsClient {
 
           if (isHeartbeatAckCommand(command)) {
             int ackHaState = readInt(msg, "HaState", haState);
+            haState = ackHaState;
+            haStates.put(url, ackHaState);
             Object nodeRole1 = msg.getOrDefault("NodeRole1", msg.get("nodeRole1"));
             Object nodeRole2 = msg.getOrDefault("NodeRole2", msg.get("nodeRole2"));
             log.debug("heartbeat ack: type={}, haState={}, nodeRole1={}, nodeRole2={}", type, ackHaState, nodeRole1, nodeRole2);
