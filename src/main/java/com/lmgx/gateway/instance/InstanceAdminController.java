@@ -27,4 +27,14 @@ public class InstanceAdminController {
     public Map<String, Object> getPaused(@PathVariable String id) {
         return service.getPaused(id);
     }
+
+    @PostMapping("/{id}/ha-state")
+    public Map<String, Object> setHaState(@PathVariable String id, @RequestParam int value) {
+        return service.setHaState(id, value);
+    }
+
+    @GetMapping("/{id}/ha-state")
+    public Map<String, Object> getHaState(@PathVariable String id) {
+        return service.getHaState(id);
+    }
 }

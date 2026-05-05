@@ -56,7 +56,7 @@ public class GatewayWsClient {
   private static final int DEFAULT_HA_STATE = 1;
 
   private volatile int hbPeriodSec = DEFAULT_HB_PERIOD_SEC;
-  private volatile int haState = DEFAULT_HA_STATE;
+  private volatile int localHaState = DEFAULT_HA_STATE;
   private final long ackTimeoutMs;
 
   public GatewayWsClient(IncomingMessageDispatcher dispatcher, StandardWebSocketClient client, long ackTimeoutMs) {
@@ -204,6 +204,14 @@ public class GatewayWsClient {
       return isPingHealthy();
     }
     return true;
+  }
+
+  public int getLocalHaState() {
+    return localHaState;
+  }
+
+  public void setLocalHaState(int haState) {
+    this.localHaState = normalizeHaState(haState);
   }
 
   public int haStateOf(String url) {
@@ -359,19 +367,21 @@ public class GatewayWsClient {
           if (isInitCommand(command)) {
             try {
               hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
-              haState = readInt(msg, "HaState", DEFAULT_HA_STATE);
-              haStates.put(url, haState);
-              log.debug("init recv: hbPeriodSec={}, haState={}, type={}", hbPeriodSec, haState, type);
+              int peerHaState = readInt(msg, "HaState", DEFAULT_HA_STATE);
+              haStates.put(url, peerHaState);
+              log.debug("init recv: hbPeriodSec={}, peerHaState={}, localHaState={}, type={}",
+                  hbPeriodSec, peerHaState, localHaState, type);
               if (!sendJson(session, Map.of(
                   "Command", 2,
                   "HostKind", hostKindOf(type),
                   "HBPeriod", hbPeriodSec,
-                  "HaState", haState,
+                  "HaState", localHaState,
                   "ResultCode", 1
               ))) {
                 throw new IllegalStateException("session closed while sending init response");
               }
-              log.debug("init sent: command=2, type={}, hbPeriodSec={}, haState={}", type, hbPeriodSec, haState);
+              log.debug("init sent: command=2, type={}, hbPeriodSec={}, localHaState={}",
+                  type, hbPeriodSec, localHaState);
               initDone.complete(null);
             } catch (Exception e) {
               initDone.completeExceptionally(e);
@@ -380,8 +390,7 @@ public class GatewayWsClient {
           }
 
           if (isHeartbeatAckCommand(command)) {
-            int ackHaState = readInt(msg, "HaState", haState);
-            haState = ackHaState;
+            int ackHaState = readInt(msg, "HaState", haStateOf(url));
             haStates.put(url, ackHaState);
             Object nodeRole1 = msg.getOrDefault("NodeRole1", msg.get("nodeRole1"));
             Object nodeRole2 = msg.getOrDefault("NodeRole2", msg.get("nodeRole2"));
@@ -435,10 +444,10 @@ public class GatewayWsClient {
         log.debug("heartbeat already pending: type={}, url={}", type, url);
         return false;
       }
-      log.debug("hb send: command=3, type={}, haState={}, url={}", type, haState, url);
+      log.debug("hb send: command=3, type={}, localHaState={}, url={}", type, localHaState, url);
       if (!sendJson(session, Map.of(
           "Command", 3,
-          "HaState", haState
+          "HaState", localHaState
       ))) {
         throw new IllegalStateException("session closed while sending heartbeat");
       }
@@ -540,6 +549,10 @@ public class GatewayWsClient {
     } catch (Exception e) {
       return defaultValue;
     }
+  }
+
+  private static int normalizeHaState(int value) {
+    return value == 2 ? 2 : 1;
   }
 
   private static Integer hostKindOf(String type) {

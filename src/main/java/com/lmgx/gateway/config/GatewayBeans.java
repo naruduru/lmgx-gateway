@@ -18,13 +18,18 @@ public class GatewayBeans {
   public GatewayWsClient gatewayWsClient(
       com.lmgx.gateway.connection.IncomingMessageDispatcher dispatcher,
       ObjectProvider<WebSocketContainer> webSocketContainerProvider,
-      @Value("${gateway.ws.ack-timeout-ms:1000}") long ackTimeoutMs
+      InstanceControlStore instanceControlStore,
+      @Value("${gateway.ws.ack-timeout-ms:1000}") long ackTimeoutMs,
+      @Value("${gateway.ws.ha-state:1}") int haState
   ) {
     WebSocketContainer webSocketContainer = webSocketContainerProvider.getIfAvailable();
     StandardWebSocketClient client = webSocketContainer == null
         ? new StandardWebSocketClient()
         : new StandardWebSocketClient(webSocketContainer);
-    return new GatewayWsClient(dispatcher, client, ackTimeoutMs);
+    instanceControlStore.setHaState(haState);
+    GatewayWsClient gatewayWsClient = new GatewayWsClient(dispatcher, client, ackTimeoutMs);
+    gatewayWsClient.setLocalHaState(instanceControlStore.getHaState());
+    return gatewayWsClient;
   }
 
   @Bean
