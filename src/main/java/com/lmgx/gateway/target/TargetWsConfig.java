@@ -23,11 +23,11 @@ public class TargetWsConfig implements WebSocketConfigurer {
 
   @Override
   public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
+    registry.addHandler(new TargetHandler("U1", toggles), "/clientws/U1").setAllowedOriginPatterns("*");
+    registry.addHandler(new TargetHandler("U2", toggles), "/clientws/U2").setAllowedOriginPatterns("*");
     registry.addHandler(new TargetHandler("A1", toggles), "/clientws/A1").setAllowedOriginPatterns("*");
     registry.addHandler(new TargetHandler("A2", toggles), "/clientws/A2").setAllowedOriginPatterns("*");
-    registry.addHandler(new TargetHandler("E1", toggles), "/clientws/E1").setAllowedOriginPatterns("*");
-    registry.addHandler(new TargetHandler("E2", toggles), "/clientws/E2").setAllowedOriginPatterns("*");
-    log.info("WebSocket handlers registered for A1/A2/E1/E2");
+    log.info("WebSocket handlers registered for U1/U2/A1/A2");
   }
 
   static class TargetHandler extends TextWebSocketHandler {

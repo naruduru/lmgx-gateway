@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class GatewayMonitorService {
-    private static final List<String> TARGET_IDS = List.of("A1", "A2", "E1", "E2");
+    private static final List<String> TARGET_IDS = List.of("U1", "U2", "A1", "A2");
 
     private final Environment env;
     private final TargetToggleStore toggles;
@@ -154,7 +154,7 @@ public class GatewayMonitorService {
 
     private String[] ringForGroup(String group) {
         String key = "gateway.ring." + ("G2".equalsIgnoreCase(group) ? "G2" : "G1");
-        String csv = env.getProperty(key, "A1,A2,E1,E2");
+        String csv = env.getProperty(key, "U1,U2,A1,A2");
         String[] parts = csv.split(",");
         for (int i = 0; i < parts.length; i++) {
             parts[i] = parts[i].trim();
@@ -186,27 +186,27 @@ public class GatewayMonitorService {
     }
 
     private String[] statusFor(String id, java.util.Map<String, Boolean> upMap) {
-        if ("A1".equals(id) || "A2".equals(id)) {
-            boolean a1Up = upMap.getOrDefault("A1", false);
-            boolean a2Up = upMap.getOrDefault("A2", false);
-            if ("A1".equals(id)) {
-                return a1Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
+        if ("U1".equals(id) || "U2".equals(id)) {
+            boolean u1Up = upMap.getOrDefault("U1", false);
+            boolean u2Up = upMap.getOrDefault("U2", false);
+            if ("U1".equals(id)) {
+                return u1Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
             }
-            if (a1Up) {
-                return a2Up ? new String[] {"STANDBY", "warning"} : new String[] {"DOWN", "danger"};
+            if (u1Up) {
+                return u2Up ? new String[] {"STANDBY", "warning"} : new String[] {"DOWN", "danger"};
             }
-            return a2Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
+            return u2Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
         }
 
-        boolean e1Up = upMap.getOrDefault("E1", false);
-        boolean e2Up = upMap.getOrDefault("E2", false);
-        if ("E1".equals(id)) {
-            return e1Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
+        boolean a1Up = upMap.getOrDefault("A1", false);
+        boolean a2Up = upMap.getOrDefault("A2", false);
+        if ("A1".equals(id)) {
+            return a1Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
         }
-        if (e1Up) {
-            return e2Up ? new String[] {"STANDBY", "warning"} : new String[] {"DOWN", "danger"};
+        if (a1Up) {
+            return a2Up ? new String[] {"STANDBY", "warning"} : new String[] {"DOWN", "danger"};
         }
-        return e2Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
+        return a2Up ? new String[] {"ACTIVE", "success"} : new String[] {"DOWN", "danger"};
     }
 
     @Scheduled(fixedDelay = 1000)

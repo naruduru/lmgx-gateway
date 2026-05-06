@@ -3,18 +3,18 @@ gateway:
     id: ${GATEWAY_INSTANCE_ID:WA1}
   # prod: all targets enabled.
   targets:
-    A1: ws://127.0.0.1:6701/clientws/A1
-    A2: ws://127.0.0.1:6702/clientws/A2
-    E1: ws://127.0.0.1:6703/clientws/E1
-    E2: ws://127.0.0.1:6704/clientws/E2
+    U1: ws://127.0.0.1:6701/clientws/U1
+    U2: ws://127.0.0.1:6702/clientws/U2
+    A1: ws://127.0.0.1:6703/clientws/A1
+    A2: ws://127.0.0.1:6704/clientws/A2
   ring:
-    G1: A1,A2,E1,E2
-    G2: E1,E2,A1,A2
+    G1: U1,U2,A1,A2
+    G2: A1,A2,U1,U2
   recover:
     enabled: true
-    G1: A1,A2
-    G2: E1,E2
+    G1: U1,U2
+    G2: A1,A2
   prefer:
     enabled: true
-    G1: A1,A2
-    G2: E1,E2
+    G1: U1,U2
+    G2: A1,A2

@@ -40,24 +40,24 @@ UI는 제외합니다.
 ```yaml
 gateway:
   targets:
-    A1: ws://127.0.0.1:6701/clientws/A1
-    A2: ws://127.0.0.1:6702/clientws/A2
-    E1: ws://127.0.0.1:6703/clientws/E1
-    E2: ws://127.0.0.1:6704/clientws/E2
+    U1: ws://127.0.0.1:6701/clientws/U1
+    U2: ws://127.0.0.1:6702/clientws/U2
+    A1: ws://127.0.0.1:6703/clientws/A1
+    A2: ws://127.0.0.1:6704/clientws/A2
 
   ring:
-    G1: A1,A2,E1,E2
-    G2: E1,E2,A1,A2
+    G1: U1,U2,A1,A2
+    G2: A1,A2,U1,U2
 
   recover:
     enabled: true
-    G1: A1,A2
-    G2: E1,E2
+    G1: U1,U2
+    G2: A1,A2
 
   prefer:
     enabled: true
-    G1: A1,A2
-    G2: E1,E2
+    G1: U1,U2
+    G2: A1,A2
 
   ws:
     ack-timeout-ms: 3000
@@ -68,17 +68,17 @@ gateway:
 ```yaml
 gateway:
   targets:
-    A1: ws://127.0.0.1:6701/clientws/A1
+    U1: ws://127.0.0.1:6701/clientws/U1
+    U2:
+    A1: ws://127.0.0.1:6703/clientws/A1
     A2:
-    E1: ws://127.0.0.1:6703/clientws/E1
-    E2:
 ```
 
-`A2`, `E2`를 비워도 코드에서 자동 제외됩니다.
+`U2`, `A2`를 비워도 코드에서 자동 제외됩니다.
 
 ## 4) 동작 모델
 
-- 시작 후 `A1/A2/E1/E2` 전체 타겟 세션 유지 시도
+- 시작 후 `U1/U2/A1/A2` 전체 타겟 세션 유지 시도
 - 타겟별 chat/email 2세션 유지 (`HostKind` 분리)
 - failover는 `ring/recover/prefer` + 세션 상태 기반 판정
 
@@ -107,4 +107,4 @@ gateway:
 - [ ] `UqSender`로 전송 성공
 - [ ] `IncomingCommandHandler` 수신 라우팅 확인
 - [ ] `Command=1~4` 하트비트 정상 동작
-- [ ] `A1/A2/E1/E2` 타겟별 chat/email 세션 오픈 상태 확인
+- [ ] `U1/U2/A1/A2` 타겟별 chat/email 세션 오픈 상태 확인

@@ -30,6 +30,8 @@ public class GatewayWsClient {
   private final ObjectMapper om = new ObjectMapper();
   private final StandardWebSocketClient client;
   private final IncomingMessageDispatcher dispatcher;
+  private final String sourceIp;
+  private final Map<String, String> targetIdByUrl;
   private final ExecutorService connector = Executors.newSingleThreadExecutor(r -> {
     Thread t = new Thread(r, "gw-ws-connector");
     t.setDaemon(true);
@@ -58,11 +60,26 @@ public class GatewayWsClient {
   private volatile int hbPeriodSec = DEFAULT_HB_PERIOD_SEC;
   private volatile int localHaState = DEFAULT_HA_STATE;
   private final long ackTimeoutMs;
+  private final long connectBackoffInitialMs;
+  private final long connectBackoffMaxMs;
+  private final double connectBackoffMultiplier;
 
   public GatewayWsClient(IncomingMessageDispatcher dispatcher, StandardWebSocketClient client, long ackTimeoutMs) {
+    this(dispatcher, client, ackTimeoutMs, "127.0.0.1", Map.of(), 1000L, 1000L, 1.0d);
+  }
+
+  public GatewayWsClient(IncomingMessageDispatcher dispatcher, StandardWebSocketClient client, long ackTimeoutMs,
+                         String sourceIp, Map<String, String> targetIdByUrl,
+                         long connectBackoffInitialMs, long connectBackoffMaxMs,
+                         double connectBackoffMultiplier) {
     this.dispatcher = dispatcher;
     this.client = Objects.requireNonNull(client, "StandardWebSocketClient must not be null");
     this.ackTimeoutMs = Math.max(1, ackTimeoutMs);
+    this.sourceIp = sourceIp == null || sourceIp.isBlank() ? "127.0.0.1" : sourceIp.trim();
+    this.targetIdByUrl = Map.copyOf(targetIdByUrl == null ? Map.of() : targetIdByUrl);
+    this.connectBackoffInitialMs = Math.max(1L, connectBackoffInitialMs);
+    this.connectBackoffMaxMs = Math.max(this.connectBackoffInitialMs, connectBackoffMaxMs);
+    this.connectBackoffMultiplier = connectBackoffMultiplier < 1.0d ? 1.0d : connectBackoffMultiplier;
   }
 
   public void connect(String wsUrl) {
@@ -157,10 +174,19 @@ public class GatewayWsClient {
   }
 
   private long calcBackoffMs(int failures) {
-    return 1000L;
+    if (failures <= 1 || connectBackoffMultiplier == 1.0d) {
+      return connectBackoffInitialMs;
+    }
+    double backoff = connectBackoffInitialMs * Math.pow(connectBackoffMultiplier, failures - 1);
+    if (backoff >= connectBackoffMaxMs) {
+      return connectBackoffMaxMs;
+    }
+    return Math.max(connectBackoffInitialMs, (long) backoff);
   }
 
   public String currentUrl() { return currentUrl; }
+  public String sourceIp() { return sourceIp; }
+  public String targetIdOf(String url) { return url == null ? null : targetIdByUrl.get(url); }
 
   public long lastPingAt() { return lastPingAt; }
   public boolean lastPingOk() { return lastPingOk; }

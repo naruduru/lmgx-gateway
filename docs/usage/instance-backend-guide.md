@@ -47,36 +47,36 @@ UI는 제외합니다.
 ```yaml
 gateway:
   targets:
-    A1: ws://127.0.0.1:6701/clientws/A1
-    A2: ws://127.0.0.1:6702/clientws/A2
-    E1: ws://127.0.0.1:6703/clientws/E1
-    E2: ws://127.0.0.1:6704/clientws/E2
+    U1: ws://127.0.0.1:6701/clientws/U1
+    U2: ws://127.0.0.1:6702/clientws/U2
+    A1: ws://127.0.0.1:6703/clientws/A1
+    A2: ws://127.0.0.1:6704/clientws/A2
 
   ring:
-    G1: A1,A2,E1,E2
-    G2: E1,E2,A1,A2
+    G1: U1,U2,A1,A2
+    G2: A1,A2,U1,U2
 
   recover:
     enabled: true
-    G1: A1,A2
-    G2: E1,E2
+    G1: U1,U2
+    G2: A1,A2
 
   prefer:
     enabled: true
-    G1: A1,A2
-    G2: E1,E2
+    G1: U1,U2
+    G2: A1,A2
 
   ws:
     ack-timeout-ms: 3000
 ```
 
 로컬/개발처럼 일부 타겟만 쓰는 경우:
-- `A2`, `E2`를 비워두어도 됩니다. (`A2:` / `E2:`)
+- `U2`, `A2`를 비워두어도 됩니다. (`U2:` / `A2:`)
 - `ring/recover/prefer`에 포함되어 있어도, 코드에서 실제 URL이 없는 타겟은 자동 제외합니다.
 
 ## 4) 연결/헬스 모델 (현재 소스 기준)
 
-- 앱 시작 후 `A1/A2/E1/E2` 전체 타겟에 대해 chat/email 세션을 유지 시도합니다.
+- 앱 시작 후 `U1/U2/A1/A2` 전체 타겟에 대해 chat/email 세션을 유지 시도합니다.
 - 각 타겟은 chat/email 2세션으로 동작합니다. (`HostKind` C/I 분리)
 - failover/ring/recover/prefer 판정은 유지 세션 상태(`isReady(url)`, `pingBoth(url)`) 기준으로 수행합니다.
 
@@ -89,13 +89,13 @@ gateway:
 - `prefer.enabled`: `false`면 prefer 업그레이드 로직을 수행하지 않습니다.
 
 기본값 예시:
-- `ring.G1=A1,A2,E1,E2`
-- `recover.G1=A1,A2`
-- `prefer.G1=A1,A2`
+- `ring.G1=U1,U2,A1,A2`
+- `recover.G1=U1,U2`
+- `prefer.G1=U1,U2`
 
 동작 예시(G1 기준):
-1. 현재 `A1` 장애 시 `ring` 순서대로 `A2 -> E1 -> E2` 탐색 후 첫 정상 타겟으로 전환
-2. `E1`에서 운영 중이고 `A1`이 다시 안정되면 `prefer/recover` 조건 충족 시 `A1`로 복귀
+1. 현재 `U1` 장애 시 `ring` 순서대로 `U2 -> A1 -> A2` 탐색 후 첫 정상 타겟으로 전환
+2. `A1`에서 운영 중이고 `U1`이 다시 안정되면 `prefer/recover` 조건 충족 시 `U1`로 복귀
 3. 같은 그룹 내에서도 `prefer` 앞쪽 타겟이 안정적으로 살아나면 업그레이드 전환
 
 ## 5) 전송 규격
@@ -189,4 +189,4 @@ public class UqCommandHandler implements IncomingCommandHandler {
 - [ ] `UqSender`로 송신 가능
 - [ ] `IncomingCommandHandler`로 수신 라우팅 확인
 - [ ] 하트비트 `Command=1~4` 정상 동작
-- [ ] 전체 타겟(`A1/A2/E1/E2`) 세션 유지 상태 확인
+- [ ] 전체 타겟(`U1/U2/A1/A2`) 세션 유지 상태 확인
