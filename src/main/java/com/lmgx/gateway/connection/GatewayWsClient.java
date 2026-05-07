@@ -38,26 +38,44 @@ public class GatewayWsClient {
     return t;
   });
 
+  // 타겟 URL별 chat 채널 WebSocket 세션 저장소다.
   private final ConcurrentMap<String, WebSocketSession> chatSessions = new ConcurrentHashMap<>();
+  // 타겟 URL별 email 채널 WebSocket 세션 저장소다.
   private final ConcurrentMap<String, WebSocketSession> emailSessions = new ConcurrentHashMap<>();
+  // 타겟 URL별 chat heartbeat 응답 대기 상태다.
   private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingChat = new ConcurrentHashMap<>();
+  // 타겟 URL별 email heartbeat 응답 대기 상태다.
   private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingEmail = new ConcurrentHashMap<>();
+  // 타겟 URL별 peer HA 상태값이다. 1은 active, 2는 standby다.
   private final ConcurrentMap<String, Integer> haStates = new ConcurrentHashMap<>();
+  // 타겟/채널별 다음 연결 재시도 가능 시각이다.
   private final ConcurrentMap<String, Long> nextConnectAllowedAt = new ConcurrentHashMap<>();
+  // 타겟/채널별 연속 연결 실패 횟수다.
   private final ConcurrentMap<String, AtomicInteger> connectFailures = new ConcurrentHashMap<>();
+  // 현재 비동기 연결 시도 중인 타겟/채널 키 집합이다.
   private final java.util.Set<String> connectingChannels = ConcurrentHashMap.newKeySet();
 
+  // 현재 업무 command 기준으로 선택된 타겟 URL이다.
   private volatile String currentUrl;
+  // 현재 업무 타겟에 대한 마지막 heartbeat 성공 여부다.
   private volatile boolean lastPingOk = false;
+  // 현재 업무 타겟에 대한 마지막 heartbeat 확인 시각이다.
   private volatile long lastPingAt = 0L;
+  // 현재 업무 타겟에 대한 연속 heartbeat 실패 횟수다.
   private final AtomicInteger pingFailures = new AtomicInteger(0);
 
+  // 마지막 heartbeat 결과가 이 시간보다 오래되면 현재 ping 상태를 오래된 값으로 본다.
   private static final long PING_STALE_MS = 5000;
+  // heartbeat 실패가 이 횟수 이상 누적되면 현재 타겟 ping 상태를 불량으로 본다.
   private static final int PING_FAIL_THRESHOLD = 3;
+  // 타겟 init 메시지에 HBPeriod가 없을 때 사용할 기본 heartbeat 주기다.
   private static final int DEFAULT_HB_PERIOD_SEC = 10;
+  // HA 상태값이 없을 때는 active로 보는 기본값이다.
   private static final int DEFAULT_HA_STATE = 1;
 
+  // 타겟이 init에서 알려준 heartbeat 주기다.
   private volatile int hbPeriodSec = DEFAULT_HB_PERIOD_SEC;
+  // 이 게이트웨이 인스턴스가 타겟에 광고할 local HA 상태다.
   private volatile int localHaState = DEFAULT_HA_STATE;
   private final long ackTimeoutMs;
   private final long connectBackoffInitialMs;
@@ -83,11 +101,13 @@ public class GatewayWsClient {
   }
 
   public void connect(String wsUrl) {
+    // 하나의 타겟은 chat/email 두 논리 채널이 모두 연결되어야 사용할 수 있다.
     connectChat(wsUrl);
     connectEmail(wsUrl);
   }
 
   public void connectForce(String wsUrl) {
+    // 장애 전환 후 선택된 타겟에 새 세션을 만들기 위해 강제 재연결한다.
     connectChatForce(wsUrl);
     connectEmailForce(wsUrl);
   }
@@ -112,11 +132,13 @@ public class GatewayWsClient {
     if (urls == null) {
       return;
     }
+    // 모든 설정 타겟을 미리 연결해 둔다. 실제 라우팅은 HA active 상태를 별도로 본다.
     for (String url : urls) {
       connect(url);
     }
   }
 
+  // 지정한 타겟/채널 조합에 대해 WebSocket 연결을 비동기로 생성하거나 재생성한다.
   private void connectChannelInternal(String wsUrl, MessageSender.Channel channel, boolean force) {
     if (wsUrl == null || wsUrl.isBlank() || channel == null) {
       return;
@@ -136,6 +158,7 @@ public class GatewayWsClient {
       return;
     }
     if (!connectingChannels.add(key)) {
+      // 같은 타겟/채널에 대한 중복 비동기 연결 시도를 막는다.
       return;
     }
 
@@ -154,6 +177,7 @@ public class GatewayWsClient {
         try {
           log.info("connect: url={}, channel={}", wsUrl, channel);
           AtomicReference<CompletableFuture<Void>> pendingRef = pendingRefOf(wsUrl, channel);
+          // 타겟 handshake 프로토콜에서는 CHAT은 C, EMAIL은 I로 보낸다.
           WebSocketSession opened = open(wsUrl, channelType(channel), pendingRef, channel);
           WebSocketSession previous = sessionMap(channel).put(wsUrl, opened);
           if (previous != null && previous != opened) {
@@ -173,7 +197,9 @@ public class GatewayWsClient {
     });
   }
 
+  // 연속 연결 실패 횟수에 따라 다음 재연결 대기 시간을 계산한다.
   private long calcBackoffMs(int failures) {
+    // backoff는 타겟/채널별로 관리해 한 채널 장애가 다른 채널을 막지 않게 한다.
     if (failures <= 1 || connectBackoffMultiplier == 1.0d) {
       return connectBackoffInitialMs;
     }
@@ -219,6 +245,7 @@ public class GatewayWsClient {
   }
 
   public boolean isReady(String url) {
+    // ready는 두 논리 소켓이 모두 열린 상태이며, HA active 여부는 별도로 판단한다.
     return isChatOpen(url) && isEmailOpen(url);
   }
 
@@ -244,6 +271,7 @@ public class GatewayWsClient {
     if (url == null) {
       return DEFAULT_HA_STATE;
     }
+    // 타겟 HA 상태는 init 및 heartbeat 응답에서 받은 값을 사용한다.
     return haStates.getOrDefault(url, DEFAULT_HA_STATE);
   }
 
@@ -252,6 +280,7 @@ public class GatewayWsClient {
   }
 
   public boolean isCommandRoutable(String url) {
+    // 업무 command는 두 채널이 모두 연결되고 타겟이 active일 때만 보낼 수 있다.
     return isReady(url) && isHaActive(url);
   }
 
@@ -264,6 +293,7 @@ public class GatewayWsClient {
   }
 
   public void disconnectAll() {
+    // 인스턴스 pause 시 사용한다. 세션과 대기 중인 heartbeat를 함께 정리한다.
     for (WebSocketSession session : chatSessions.values()) {
       closeQuiet(session);
     }
@@ -334,10 +364,12 @@ public class GatewayWsClient {
     return send(sessionOf(url, MessageSender.Channel.EMAIL), payload, url);
   }
 
+  // 열린 세션으로 command payload를 표준 형태로 정리해 전송한다.
   private String send(WebSocketSession s, Map<String, Object> payload, String url) throws Exception {
     if (s == null || !s.isOpen()) throw new IllegalStateException("ws not open");
     if (payload == null) throw new IllegalArgumentException("payload is required");
 
+    // 프로토콜 payload 전송 전에 허용된 command 별칭을 표준 필드로 정규화한다.
     Map<String, Object> data = new LinkedHashMap<>(payload);
     Object command = data.get("Command");
     if (command == null) {
@@ -357,6 +389,7 @@ public class GatewayWsClient {
     return "REQ-" + UUID.randomUUID();
   }
 
+  // 타겟 WebSocket을 열고 command=1 init 수신 및 command=2 응답까지 완료한다.
   private WebSocketSession open(String url, String type,
                                 AtomicReference<CompletableFuture<Void>> pendingRef,
                                 MessageSender.Channel channel) {
@@ -401,6 +434,7 @@ public class GatewayWsClient {
                   "Command", 2,
                   "HostKind", hostKindOf(type),
                   "HBPeriod", hbPeriodSec,
+                  // peer 타겟 상태가 아니라 이 게이트웨이 인스턴스의 상태를 광고한다.
                   "HaState", localHaState,
                   "ResultCode", 1
               ))) {
@@ -417,6 +451,7 @@ public class GatewayWsClient {
 
           if (isHeartbeatAckCommand(command)) {
             int ackHaState = readInt(msg, "HaState", haStateOf(url));
+            // peer의 HA 상태가 이 타겟에 업무 command를 보낼 수 있는지 결정한다.
             haStates.put(url, ackHaState);
             Object nodeRole1 = msg.getOrDefault("NodeRole1", msg.get("nodeRole1"));
             Object nodeRole2 = msg.getOrDefault("NodeRole2", msg.get("nodeRole2"));
@@ -448,6 +483,7 @@ public class GatewayWsClient {
     }
   }
 
+  // 채널별 세션과 heartbeat 대기 객체를 찾아 ping을 수행한다.
   private boolean pingChannel(String url, MessageSender.Channel channel) {
     return pingSession(
         sessionOf(url, channel),
@@ -457,6 +493,7 @@ public class GatewayWsClient {
     );
   }
 
+  // command=3 heartbeat를 보내고 command=4 응답을 ackTimeout 안에 기다린다.
   private boolean pingSession(WebSocketSession session,
                               AtomicReference<CompletableFuture<Void>> pendingRef,
                               String type,
@@ -473,6 +510,7 @@ public class GatewayWsClient {
       log.debug("hb send: command=3, type={}, localHaState={}, url={}", type, localHaState, url);
       if (!sendJson(session, Map.of(
           "Command", 3,
+          // heartbeat도 우리 local 상태를 보낸다. 타겟 상태는 command=4 응답에서 읽는다.
           "HaState", localHaState
       ))) {
         throw new IllegalStateException("session closed while sending heartbeat");
@@ -491,10 +529,12 @@ public class GatewayWsClient {
     }
   }
 
+  // 현재 업무 타겟에 대한 마지막 ping 결과와 실패 횟수를 갱신한다.
   private void updatePingStateFor(String url, boolean ok) {
     if (url == null || !url.equals(currentUrl)) {
       return;
     }
+    // 전역 ping 상태는 현재 업무 타겟에 대해서만 갱신한다.
     lastPingOk = ok;
     lastPingAt = System.currentTimeMillis();
     if (ok) {
@@ -504,6 +544,7 @@ public class GatewayWsClient {
     }
   }
 
+  // 세션이 열려 있을 때만 JSON payload를 thread-safe하게 전송한다.
   private boolean sendJson(WebSocketSession session, Map<String, Object> payload) {
     if (session == null || !session.isOpen()) {
       return false;
@@ -521,11 +562,13 @@ public class GatewayWsClient {
     }
   }
 
+  // 특정 타겟/채널의 WebSocket 세션이 열려 있는지 확인한다.
   private boolean isChannelOpen(String url, MessageSender.Channel channel) {
     WebSocketSession session = sessionOf(url, channel);
     return session != null && session.isOpen();
   }
 
+  // 특정 타겟/채널 세션을 닫고 대기 중인 heartbeat 상태를 정리한다.
   private void disconnectChannel(String url, MessageSender.Channel channel) {
     if (url == null) {
       return;
@@ -535,6 +578,7 @@ public class GatewayWsClient {
     pendingRefOf(url, channel).set(null);
   }
 
+  // 특정 타겟/채널에 해당하는 현재 WebSocket 세션을 반환한다.
   private WebSocketSession sessionOf(String url, MessageSender.Channel channel) {
     if (url == null) {
       return null;
@@ -542,24 +586,30 @@ public class GatewayWsClient {
     return sessionMap(channel).get(url);
   }
 
+  // 채널 종류에 맞는 세션 저장소를 선택한다.
   private ConcurrentMap<String, WebSocketSession> sessionMap(MessageSender.Channel channel) {
     return channel == MessageSender.Channel.CHAT ? chatSessions : emailSessions;
   }
 
+  // 채널 종류에 맞는 heartbeat 대기 저장소를 선택하고 없으면 생성한다.
   private AtomicReference<CompletableFuture<Void>> pendingRefOf(String url, MessageSender.Channel channel) {
     ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> map =
         channel == MessageSender.Channel.CHAT ? pendingChat : pendingEmail;
+    // 타겟/채널별 heartbeat는 한 번에 하나만 대기할 수 있다.
     return map.computeIfAbsent(url, key -> new AtomicReference<>());
   }
 
+  // 재연결 backoff와 중복 연결 방지에 사용할 타겟/채널 키를 만든다.
   private static String connectKey(String url, MessageSender.Channel channel) {
     return url + "|" + channel.name();
   }
 
+  // 내부 채널 enum을 타겟 프로토콜의 채널 타입 값으로 변환한다.
   private static String channelType(MessageSender.Channel channel) {
     return channel == MessageSender.Channel.EMAIL ? "I" : "C";
   }
 
+  // payload에서 숫자 필드를 안전하게 읽고 실패하면 기본값을 반환한다.
   private static int readInt(Map<String, Object> msg, String key, int defaultValue) {
     Object v = msg.get(key);
     if (v == null) {
@@ -577,14 +627,17 @@ public class GatewayWsClient {
     }
   }
 
+  // HA 상태는 2만 standby로 인정하고 나머지는 active로 정규화한다.
   private static int normalizeHaState(int value) {
     return value == 2 ? 2 : 1;
   }
 
+  // init 응답에 넣을 HostKind 값을 채널 타입 기준으로 계산한다.
   private static Integer hostKindOf(String type) {
     return "I".equals(type) ? 2 : 1;
   }
 
+  // command 필드를 숫자형 프로토콜 값으로 정규화한다.
   private static int normalizeCommand(Object command) {
     if (command instanceof Number n) {
       return n.intValue();
@@ -596,19 +649,23 @@ public class GatewayWsClient {
     }
   }
 
+  // 수신 payload에서 command 필드를 대소문자 호환 형태로 찾는다.
   private static Object commandOf(Map<String, Object> msg) {
     Object c = msg.get("command");
     return c != null ? c : msg.get("Command");
   }
 
+  // 수신 command가 init 요청(command=1)인지 확인한다.
   private static boolean isInitCommand(Object command) {
     return Integer.valueOf(1).equals(command) || "1".equals(String.valueOf(command));
   }
 
+  // 수신 command가 heartbeat 응답(command=4)인지 확인한다.
   private static boolean isHeartbeatAckCommand(Object command) {
     return Integer.valueOf(4).equals(command) || "4".equals(String.valueOf(command));
   }
 
+  // 로그에 남길 예외 원인 메시지를 root cause 기준으로 만든다.
   private static String describe(Throwable t) {
     Throwable cur = t;
     while (cur.getCause() != null) {
@@ -621,6 +678,7 @@ public class GatewayWsClient {
     return cur.getClass().getName() + ": " + msg;
   }
 
+  // 세션 종료 실패가 상위 흐름에 영향을 주지 않도록 조용히 닫는다.
   private static void closeQuiet(WebSocketSession s) {
     if (s != null && s.isOpen()) {
       try { s.close(); } catch (Exception ignore) {}

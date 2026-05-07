@@ -38,15 +38,18 @@ public class GatewayBeans {
     StandardWebSocketClient client = webSocketContainer == null
         ? new StandardWebSocketClient()
         : new StandardWebSocketClient(webSocketContainer);
+    // source IP는 헬스 상태 row에 기록되며 설정값으로 고정할 수 있다.
     String sourceIp = configuredSourceIp == null || configuredSourceIp.isBlank()
         ? resolveSourceIp()
         : configuredSourceIp.trim();
+    // 로그, 이벤트, 라우팅 정책에서 쓰기 위해 설정된 타겟 URL을 고정 타겟 ID로 매핑한다.
     Map<String, String> targetIdByUrl = new HashMap<>();
     putTarget(targetIdByUrl, "U1", targetU1);
     putTarget(targetIdByUrl, "U2", targetU2);
     putTarget(targetIdByUrl, "A1", targetA1);
     putTarget(targetIdByUrl, "A2", targetA2);
 
+    // local 인스턴스 HA 상태를 한 번 저장하고 정규화된 값을 WebSocket heartbeat에 사용한다.
     instanceControlStore.setHaState(haState);
     GatewayWsClient gatewayWsClient = new GatewayWsClient(dispatcher, client, ackTimeoutMs, sourceIp,
         targetIdByUrl, connectBackoffInitialMs, connectBackoffMaxMs, connectBackoffMultiplier);
@@ -69,13 +72,16 @@ public class GatewayBeans {
     return new InstanceControlStore();
   }
 
+  // 설정된 타겟 URL이 있으면 WebSocket URL에서 타겟 ID를 찾을 수 있도록 매핑한다.
   private static void putTarget(Map<String, String> targetIdByUrl, String id, String url) {
+    // profile별 설정에서 쓰지 않는 endpoint를 생략할 수 있도록 빈 타겟은 무시한다.
     if (url == null || url.isBlank()) {
       return;
     }
     targetIdByUrl.put(url.trim(), id);
   }
 
+  // source IP 설정이 없을 때 OS에서 확인되는 로컬 IP를 사용한다.
   private static String resolveSourceIp() {
     try {
       return InetAddress.getLocalHost().getHostAddress();

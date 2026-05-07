@@ -42,29 +42,49 @@ public class FailoverLoop {
   private final boolean preferEnabled;
   private final Map<String, String> targetIdByUrl;
 
+  // 현재 이 인스턴스가 따르는 그룹 정책이다. 기본값은 G1이다.
   private volatile String activeGroup = "G1";
+  // 현재 업무 command를 보낼 대표 타겟 URL이다.
   private volatile String active;
   private final String sourceIp;
 
+  // 장애 전환 이벤트 로그에 남길 실패 관측 카운터다.
   private int failCount = 0;
+  // 복구/우선순위 복귀 후보가 연속으로 정상 확인된 횟수다.
   private int recoverStable = 0;
 
-  private static final int FAIL_THRESHOLD = 3;
+  // 복구/우선순위 복귀 대상이 이 횟수만큼 연속 정상일 때 실제 전환한다.
   private static final int RECOVER_STABLE_THRESHOLD = 5;
+  // 현재 active 타겟이 업무 불가로 관측되어도 즉시 재연결하지 않고 기다리는 횟수다.
   private static final int NOT_READY_THRESHOLD = 3;
+  // 같은 타겟에 대해 chat/email 전체 재연결을 반복하지 않기 위한 cooldown이다.
   private static final long SAME_TARGET_RECONNECT_COOLDOWN_MS = 60_000L;
+  // 모든 타겟 소켓 연결 유지를 다시 시도하는 주기다.
   private static final long ENSURE_INTERVAL_MS = 10_000L;
+  // DB 헬스 상태를 모든 타겟 기준으로 갱신하는 주기다.
   private static final long ALL_TARGET_HEALTHCHECK_INTERVAL_MS = 5_000L;
+  // standby 타겟 heartbeat 확인을 제한하는 타겟별 최소 간격이다.
   private static final long STANDBY_HEALTHCHECK_INTERVAL_MS = 5_000L;
 
+  // 현재 active 타겟이 연속으로 업무 불가 상태였던 횟수다.
   private int notReadyStreak = 0;
+  // chat 채널을 마지막으로 강제 재연결한 시각이다.
   private volatile long lastChatReconnectAt = 0L;
+  // email 채널을 마지막으로 강제 재연결한 시각이다.
   private volatile long lastEmailReconnectAt = 0L;
+  // 같은 타겟의 chat/email 전체 재연결을 마지막으로 시도한 시각이다.
   private volatile long lastSameTargetReconnectAt = 0L;
+  // 전체 타겟 연결 유지 작업을 마지막으로 수행한 시각이다.
   private volatile long lastEnsureAt = 0L;
+  // 전체 타겟 헬스체크를 마지막으로 수행한 시각이다.
   private volatile long lastAllTargetHealthcheckAt = 0L;
+  // standby 타겟별 마지막 헬스체크 시각이다.
   private final Map<String, Long> lastStandbyHealthcheckAt = new ConcurrentHashMap<>();
 
+  /**
+   * 설정된 타겟과 그룹 순서를 기준으로 장애 전환 정책을 구성한다.
+   * G1은 기본적으로 U 계열을, G2는 기본적으로 A 계열을 우선 사용한다.
+   */
   public FailoverLoop(GatewayWsClient ws, GatewayLogMapper logMapper,
                       InstanceControlStore controlStore, Environment env) {
     this.ws = ws;
@@ -108,6 +128,7 @@ public class FailoverLoop {
 
   @EventListener(ApplicationReadyEvent.class)
   public void onReady() {
+    // 장애 전환 전에 standby/backup 서버 상태도 볼 수 있도록 모든 타겟 소켓을 먼저 연결한다.
     ensureAllTargetConnections();
     long now = System.currentTimeMillis();
     lastEnsureAt = now;
@@ -130,21 +151,25 @@ public class FailoverLoop {
       lastTickAt = now;
 
       if (controlStore.isPaused()) {
+        // 인스턴스 pause는 로컬 차단 스위치이므로 resume 전까지 모든 소켓을 닫는다.
         notReadyStreak = 0;
         ws.disconnectAll();
         return;
       }
 
       if (now - lastEnsureAt >= ENSURE_INTERVAL_MS) {
+        // 현재 active 타겟뿐 아니라 설정된 모든 타겟 소켓을 계속 준비 상태로 유지한다.
         ensureAllTargetConnections();
         lastEnsureAt = now;
       }
 
       if (now - lastAllTargetHealthcheckAt >= ALL_TARGET_HEALTHCHECK_INTERVAL_MS) {
+        // 모든 타겟의 상태를 갱신한다. standby 타겟은 확인하되 업무 전송 가능으로 보지 않는다.
         healthcheckAllTargets(now);
         lastAllTargetHealthcheckAt = now;
       }
 
+      // 업무 command는 chat/email 두 채널과 타겟 HA active 상태가 모두 필요하다.
       boolean chatOk = checkAndRepairChannel(active, MessageSender.Channel.CHAT, now);
       boolean emailOk = checkAndRepairChannel(active, MessageSender.Channel.EMAIL, now);
       boolean haActive = ws.isHaActive(active);
@@ -156,6 +181,7 @@ public class FailoverLoop {
         log.warn("target not command-routable observed: group={}, active={}, streak={}, haState={}, wsState={}",
             activeGroup, active, notReadyStreak, ws.haStateOf(active), ws.readinessDebug());
 
+        // 연결은 됐지만 standby인 타겟에 업무 command가 가지 않도록 ring을 즉시 탐색한다.
         String found = findFirstCommandRoutableInRing(activeGroup, active);
         if (found != null) {
           if (!found.equals(active)) {
@@ -208,6 +234,7 @@ public class FailoverLoop {
       }
 
       if (preferEnabled) {
+        // 더 높은 우선순위 타겟은 여러 tick 동안 안정적으로 업무 가능할 때만 복귀한다.
         String[] higher = higherPreferCandidates(activeGroup, active);
         if (higher.length > 0) {
           String upUrl = firstAliveByIds(higher);
@@ -226,6 +253,7 @@ public class FailoverLoop {
 
       if (recoverEnabled) {
         if (!isInRecover(activeGroup, targetIdOf(active))) {
+          // 반대 그룹으로 넘어간 상태라면 안정성 확인 후 현재 그룹의 주 타겟으로 복구한다.
           String recoverTo = firstAliveByIds(recoverOf(activeGroup));
           if (recoverTo != null) {
             recoverStable++;
@@ -250,10 +278,14 @@ public class FailoverLoop {
   public String getActiveUrl() { return active; }
   public String getActiveGroup() { return activeGroup; }
 
+  // 설정된 모든 타겟에 대해 chat/email 소켓 연결을 시도한다.
   private void ensureAllTargetConnections() {
     ws.connectAll(U1, U2, A1, A2);
   }
 
+  /**
+   * 현재 업무 라우팅 대상과 별개로 설정된 모든 타겟의 상태를 주기적으로 확인한다.
+   */
   private void healthcheckAllTargets(long now) {
     healthcheckTarget("U1", U1, now);
     healthcheckTarget("U2", U2, now);
@@ -261,11 +293,13 @@ public class FailoverLoop {
     healthcheckTarget("A2", A2, now);
   }
 
+  // 개별 타겟의 chat/email 연결과 HA 상태를 평가해 업무 가능 여부를 DB에 반영한다.
   private void healthcheckTarget(String id, String url, long now) {
     if (url == null || url.isBlank()) {
       return;
     }
 
+    // standby 타겟은 제한된 주기로 ping하지만 DB 상태는 업무 불가로 기록한다.
     boolean haActive = ws.isHaActive(url);
     boolean checkSession = haActive || shouldHealthcheckStandby(url, now);
     boolean chatUp = checkSession && evaluateChannelAvailability(url, MessageSender.Channel.CHAT);
@@ -277,6 +311,7 @@ public class FailoverLoop {
         id, url, chatUp, emailUp, ws.haStateOf(url), commandRoutable);
   }
 
+  // 장애/복구 판단에 쓰는 연속 카운터들을 초기화한다.
   private void resetCounters() {
     failCount = 0;
     recoverStable = 0;
@@ -291,6 +326,7 @@ public class FailoverLoop {
     String found = findFirstCommandRoutableInRing(activeGroup, current);
     if (found != null) {
       if (!found.equals(current)) {
+        // 전송 직전 마지막 방어 로직이다. 스케줄러가 아직 전환하지 못했다면 여기서 전환한다.
         switchTo(found, "SEND_GUARD_SWITCH");
       }
       return found;
@@ -300,6 +336,7 @@ public class FailoverLoop {
         + ", channel=" + channel + ", active=" + current + ", haState=" + ws.haStateOf(current));
   }
 
+  // 현재 타겟부터 ring 순서대로 업무 command를 보낼 수 있는 첫 타겟을 찾는다.
   private String findFirstCommandRoutableInRing(String group, String curUrl) {
     String[] ring = ringOf(group);
 
@@ -308,6 +345,7 @@ public class FailoverLoop {
     int idx = indexOf(ring, targetIdOf(curUrl));
     if (idx < 0) idx = 0;
 
+    // 현재 타겟 다음부터 설정된 ring을 한 바퀴 돌며 업무 가능한 첫 타겟을 찾는다.
     for (int i = 1; i < ring.length; i++) {
       String url = urlOf(ring[(idx + i) % ring.length]);
       if (isCommandRoutableAndLog(url)) return url;
@@ -315,6 +353,7 @@ public class FailoverLoop {
     return null;
   }
 
+  // active 타겟을 교체하고 이벤트 로그를 남긴다.
   private synchronized void switchTo(String toUrl, String reason) {
     String fromUrl = this.active;
     if (fromUrl != null && fromUrl.equals(toUrl)) return;
@@ -323,6 +362,7 @@ public class FailoverLoop {
     log.info("switch: {} -> {} (kind={}, reason={})", fromUrl, toUrl, eventKind, reason);
 
     this.active = toUrl;
+    // 새로 선택된 업무 타겟에 대해 chat/email 두 채널을 강제로 준비한다.
     ws.connectForce(toUrl);
 
     FailoverEventLog ev = new FailoverEventLog();
@@ -339,6 +379,7 @@ public class FailoverLoop {
     safeInsertEvent(ev);
   }
 
+  // 전환 전후 타겟의 위치를 기준으로 SWITCH/RECOVER/UPGRADE 이벤트 종류를 결정한다.
   private String decideEventKind(String group, String fromUrl, String toUrl) {
     String from = targetIdOf(fromUrl);
     String to = targetIdOf(toUrl);
@@ -356,6 +397,7 @@ public class FailoverLoop {
     return "SWITCH";
   }
 
+  // 현재 타겟보다 우선순위가 높은 prefer 후보 목록만 잘라낸다.
   private String[] higherPreferCandidates(String group, String curUrl) {
     String[] prefer = preferOf(group);
     String curId = targetIdOf(curUrl);
@@ -368,6 +410,7 @@ public class FailoverLoop {
     return higher;
   }
 
+  // 주어진 타겟 ID 목록 중 업무 가능 상태인 첫 타겟 URL을 찾는다.
   private String firstAliveByIds(String[] ids) {
     for (String id : ids) {
       String url = urlOf(id);
@@ -376,11 +419,13 @@ public class FailoverLoop {
     return null;
   }
 
+  // 타겟이 chat/email 연결과 HA active 조건을 모두 만족하는지 확인하고 상태를 기록한다.
   private boolean isCommandRoutableAndLog(String url) {
     if (url == null) {
       return false;
     }
 
+    // 연결된 standby 타겟은 헬스체크 대상이지만 업무 라우팅에서는 제외한다.
     boolean haActive = ws.isHaActive(url);
     if (!haActive && !shouldHealthcheckStandby(url, System.currentTimeMillis())) {
       log.debug("session-check skipped for standby cooldown: url={}, haState={}", url, ws.haStateOf(url));
@@ -396,6 +441,7 @@ public class FailoverLoop {
     return routable;
   }
 
+  // 현재 active 타겟의 특정 채널을 heartbeat로 확인하고 필요하면 강제 재연결한다.
   private boolean checkAndRepairChannel(String url, MessageSender.Channel channel, long now) {
     if (url == null) {
       return false;
@@ -403,6 +449,7 @@ public class FailoverLoop {
 
     boolean open = channel == MessageSender.Channel.CHAT ? ws.isChatOpen(url) : ws.isEmailOpen(url);
     if (open) {
+      // 소켓이 열려 있어도 사용할 수 없을 수 있으므로 heartbeat 성공을 준비 상태로 본다.
       boolean pingOk = channel == MessageSender.Channel.CHAT ? ws.pingChat(url) : ws.pingEmail(url);
       if (pingOk) {
         return true;
@@ -429,9 +476,11 @@ public class FailoverLoop {
     return false;
   }
 
+  // 후보 타겟의 특정 채널이 열려 있고 heartbeat까지 성공하는지 확인한다.
   private boolean evaluateChannelAvailability(String url, MessageSender.Channel channel) {
     boolean open = channel == MessageSender.Channel.CHAT ? ws.isChatOpen(url) : ws.isEmailOpen(url);
     if (!open) {
+      // 수동 확인 중에도 재연결을 걸어 backup 타겟이 빠르게 업무 가능 상태가 되게 한다.
       if (channel == MessageSender.Channel.CHAT) {
         ws.connectChat(url);
       } else {
@@ -442,19 +491,26 @@ public class FailoverLoop {
     return channel == MessageSender.Channel.CHAT ? ws.pingChat(url) : ws.pingEmail(url);
   }
 
+  // activeGroup에 맞는 장애 전환 ring을 반환한다.
   private String[] ringOf(String g) { return "G2".equals(g) ? ringG2 : ringG1; }
+  // activeGroup에 맞는 복구 대상 목록을 반환한다.
   private String[] recoverOf(String g) { return "G2".equals(g) ? recoverG2 : recoverG1; }
+  // activeGroup에 맞는 우선순위 대상 목록을 반환한다.
   private String[] preferOf(String g) { return "G2".equals(g) ? preferG2 : preferG1; }
 
+  // 타겟 ID가 현재 그룹의 복구 대상에 포함되는지 확인한다.
   private boolean isInRecover(String g, String id) { return indexOf(recoverOf(g), id) >= 0; }
+  // 타겟 ID가 현재 그룹의 우선순위 대상에 포함되는지 확인한다.
   private boolean isInPrefer(String g, String id) { return indexOf(preferOf(g), id) >= 0; }
 
+  // 쉼표로 구분된 타겟 ID 설정을 배열로 변환한다.
   private String[] parseIds(String csv) {
     String[] parts = csv.split(",");
     for (int i = 0; i < parts.length; i++) parts[i] = parts[i].trim();
     return parts;
   }
 
+  // 설정에 존재하는 URL을 가진 타겟 ID만 필터링한다.
   private String[] configuredIds(String[] ids) {
     java.util.List<String> valid = new java.util.ArrayList<>();
     for (String id : ids) {
@@ -469,12 +525,14 @@ public class FailoverLoop {
     return valid.toArray(new String[0]);
   }
 
+  // 배열 안에서 특정 타겟 ID의 위치를 찾는다.
   private int indexOf(String[] arr, String v) {
     if (v == null) return -1;
     for (int i = 0; i < arr.length; i++) if (v.equals(arr[i])) return i;
     return -1;
   }
 
+  // 타겟 ID를 실제 WebSocket URL로 변환한다.
   private String urlOf(String id) {
     if (id == null) return null;
     switch (id.trim()) {
@@ -486,8 +544,10 @@ public class FailoverLoop {
     }
   }
 
+  // WebSocket URL에 대응하는 타겟 ID를 찾는다.
   private String targetIdOf(String url) {
     if (url == null) return null;
+    // 환경별 endpoint suffix가 달라질 수 있으므로 설정 기반 URL 매핑을 우선한다.
     String mapped = targetIdByUrl.get(url);
     if (mapped != null) return mapped;
     mapped = ws.targetIdOf(url);
@@ -497,14 +557,17 @@ public class FailoverLoop {
     return url.substring(i + 1);
   }
 
+  // 같은 타겟에 대한 전체 재연결 cooldown이 끝났는지 확인한다.
   private boolean shouldReconnectSameTarget(long now) {
     return sameTargetReconnectCooldownLeft(now) <= 0;
   }
 
+  // 같은 타겟에 대한 전체 재연결 cooldown 남은 시간을 계산한다.
   private long sameTargetReconnectCooldownLeft(long now) {
     return SAME_TARGET_RECONNECT_COOLDOWN_MS - (now - lastSameTargetReconnectAt);
   }
 
+  // standby 타겟 헬스체크를 너무 자주 하지 않도록 타겟별 주기를 제한한다.
   private boolean shouldHealthcheckStandby(String url, long now) {
     Long lastAt = lastStandbyHealthcheckAt.get(url);
     if (lastAt != null && now - lastAt < STANDBY_HEALTHCHECK_INTERVAL_MS) {
@@ -514,6 +577,7 @@ public class FailoverLoop {
     return true;
   }
 
+  // URL이 설정된 경우에만 URL -> 타겟 ID 매핑에 추가한다.
   private static void putIfPresent(Map<String, String> targetIdByUrl, String url, String id) {
     if (url == null || url.isBlank()) {
       return;
@@ -521,6 +585,7 @@ public class FailoverLoop {
     targetIdByUrl.put(url.trim(), id);
   }
 
+  // 타겟 host 기준 헬스 상태를 DB에 upsert한다.
   private void updateHealthStatus(String targetUrl, boolean up) {
     String targetIp = hostOf(targetUrl);
     if (targetIp == null || targetIp.isBlank()) {
@@ -533,10 +598,12 @@ public class FailoverLoop {
     try { logMapper.upsertHealthStatus(status); } catch (Exception ignore) {}
   }
 
+  // 장애 전환 이벤트 저장 실패가 루프를 중단하지 않도록 보호한다.
   private void safeInsertEvent(FailoverEventLog log) {
     try { logMapper.insertFailoverEvent(log); } catch (Exception ignore) {}
   }
 
+  // WebSocket URL에서 host 부분만 추출한다.
   private static String hostOf(String url) {
     if (url == null || url.isBlank()) {
       return null;
@@ -548,6 +615,7 @@ public class FailoverLoop {
     }
   }
 
+  // 설정값이 있으면 사용하고 없으면 로컬 host IP를 source IP로 사용한다.
   private static String resolveSourceIp(String configuredIp) {
     if (configuredIp != null && !configuredIp.isBlank()) {
       return configuredIp.trim();
