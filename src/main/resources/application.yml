@@ -36,6 +36,11 @@ gateway:
       initial-ms: 5000
       max-ms: 1800000
       multiplier: 2.0
+  uq:
+    response-timeout-ms: 300000
+    session-inflight-ttl-ms: 300000
+    serialized-chat-commands: 1045
+    session-key-fields: TenantId+ReqUserId,TenantId+reqUserId,tenantId+ReqUserId,tenantId+reqUserId,UCID,ucid,SessionId,sessionId,SESSION_ID,ChatId,chatId,CHAT_ID,RoomId,roomId,ROOM_ID,UserId,userId,USER_ID,CallingUserId,callingUserId
 
 mybatis:
   mapper-locations: classpath*:mapper/*.xml

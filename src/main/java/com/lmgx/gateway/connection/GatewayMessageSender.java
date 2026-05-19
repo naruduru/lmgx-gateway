@@ -1,5 +1,4 @@
 package com.lmgx.gateway.connection;
-
 import org.springframework.stereotype.Component;
 
 import java.util.Map;

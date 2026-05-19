@@ -19,6 +19,10 @@ public class GatewayController {
   @PostMapping("/chat/send")
   public Map<String, Object> chat(@RequestBody Map<String, Object> body) {
     try {
+      if (uqSender.isSerializedChatCommand(body)) {
+        Map<String, Object> response = uqSender.sendAndAwait(MessageSender.Channel.CHAT, body);
+        return Map.of("ok", true, "response", response);
+      }
       String id = uqSender.send(MessageSender.Channel.CHAT, body);
       return Map.of("ok", true, "requestId", id);
     } catch (Exception e) {
