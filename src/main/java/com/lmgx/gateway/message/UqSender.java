@@ -18,20 +18,17 @@ public class UqSender {
   private final MessageSender sender;
   private final UqRequestTracker requestTracker;
   private final SessionInFlightStore sessionInFlightStore;
-  private final SessionRequestKeyResolver sessionRequestKeyResolver;
   private final Set<Integer> serializedChatCommands;
 
   public UqSender(
       MessageSender sender,
       UqRequestTracker requestTracker,
       SessionInFlightStore sessionInFlightStore,
-      SessionRequestKeyResolver sessionRequestKeyResolver,
       @Value("${gateway.uq.serialized-chat-commands:1045}") String serializedChatCommands
   ) {
     this.sender = sender;
     this.requestTracker = requestTracker;
     this.sessionInFlightStore = sessionInFlightStore;
-    this.sessionRequestKeyResolver = sessionRequestKeyResolver;
     this.serializedChatCommands = parseCommands(serializedChatCommands);
   }
 
@@ -118,14 +115,6 @@ public class UqSender {
     sendCommand(MessageSender.Channel.CHAT, 1545, payload);
   }
 
-  public void sendTransferSecondChatting(Map<String, Object> payload) throws Exception {
-    send(MessageSender.Channel.CHAT, withDefaultCommand(payload, 1537));
-  }
-
-  public void sendClearChat(Map<String, Object> payload) throws Exception {
-    send(MessageSender.Channel.CHAT, withDefaultCommand(payload, 1538));
-  }
-
   private void sendCommand(MessageSender.Channel channel, int command, Map<String, Object> payload) throws Exception {
     Map<String, Object> data = new LinkedHashMap<>();
     if (payload != null) {
@@ -175,17 +164,6 @@ public class UqSender {
       ucid = payload.get("ucid");
     }
     return command + ":" + (ucid == null ? "" : String.valueOf(ucid));
-  }
-
-  private static Map<String, Object> withDefaultCommand(Map<String, Object> payload, int command) {
-    Map<String, Object> data = new LinkedHashMap<>();
-    if (payload != null) {
-      data.putAll(payload);
-    }
-    if (!data.containsKey("Command") && !data.containsKey("command") && !data.containsKey("cmd")) {
-      data.put("Command", command);
-    }
-    return data;
   }
 
   private static Integer commandOf(Map<String, Object> payload) {
