@@ -443,7 +443,7 @@ public class FailoverLoop {
     return routable;
   }
 
-  // 현재 active 타겟의 특정 채널을 heartbeat로 확인하고 필요하면 강제 재연결한다.
+  // 현재 active 타겟의 특정 채널을 heartbeat로 확인하고 필요하면 비강제 연결을 시도한다.
   private boolean checkAndRepairChannel(String url, MessageSender.Channel channel, long now) {
     if (url == null) {
       return false;
@@ -469,10 +469,10 @@ public class FailoverLoop {
     log.warn("{} not ready observed: active={}, wsState={}",
         channel.name().toLowerCase(), url, ws.readinessDebug());
     if (channel == MessageSender.Channel.CHAT) {
-      ws.connectChatForce(url);
+      ws.connectChat(url);
       lastChatReconnectAt = now;
     } else {
-      ws.connectEmailForce(url);
+      ws.connectEmail(url);
       lastEmailReconnectAt = now;
     }
     return false;

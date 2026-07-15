@@ -106,26 +106,12 @@ public class GatewayWsClient {
     connectEmail(wsUrl);
   }
 
-  public void connectForce(String wsUrl) {
-    // 장애 전환 후 선택된 타겟에 새 세션을 만들기 위해 강제 재연결한다.
-    connectChatForce(wsUrl);
-    connectEmailForce(wsUrl);
-  }
-
   public void connectChat(String wsUrl) {
-    connectChannelInternal(wsUrl, MessageSender.Channel.CHAT, false);
+    connectChannelInternal(wsUrl, MessageSender.Channel.CHAT);
   }
 
   public void connectEmail(String wsUrl) {
-    connectChannelInternal(wsUrl, MessageSender.Channel.EMAIL, false);
-  }
-
-  public void connectChatForce(String wsUrl) {
-    connectChannelInternal(wsUrl, MessageSender.Channel.CHAT, true);
-  }
-
-  public void connectEmailForce(String wsUrl) {
-    connectChannelInternal(wsUrl, MessageSender.Channel.EMAIL, true);
+    connectChannelInternal(wsUrl, MessageSender.Channel.EMAIL);
   }
 
   public void connectAll(String... urls) {
@@ -139,22 +125,22 @@ public class GatewayWsClient {
   }
 
   // 지정한 타겟/채널 조합에 대해 WebSocket 연결을 비동기로 생성하거나 재생성한다.
-  private void connectChannelInternal(String wsUrl, MessageSender.Channel channel, boolean force) {
+  private void connectChannelInternal(String wsUrl, MessageSender.Channel channel) {
     if (wsUrl == null || wsUrl.isBlank() || channel == null) {
       return;
     }
-    if (force || currentUrl == null || currentUrl.isBlank()) {
+    if (currentUrl == null || currentUrl.isBlank()) {
       this.currentUrl = wsUrl;
     }
 
-    if (!force && isChannelOpen(wsUrl, channel)) {
+    if (isChannelOpen(wsUrl, channel)) {
       return;
     }
 
     String key = connectKey(wsUrl, channel);
     long now = System.currentTimeMillis();
     long allowedAt = nextConnectAllowedAt.getOrDefault(key, 0L);
-    if (!force && now < allowedAt) {
+    if (now < allowedAt) {
       return;
     }
     if (!connectingChannels.add(key)) {
@@ -164,12 +150,12 @@ public class GatewayWsClient {
 
     connector.submit(() -> {
       try {
-        if (!force && isChannelOpen(wsUrl, channel)) {
+        if (isChannelOpen(wsUrl, channel)) {
           return;
         }
 
         WebSocketSession old = sessionOf(wsUrl, channel);
-        if (force || old == null || !old.isOpen()) {
+        if (old == null || !old.isOpen()) {
           closeQuiet(old);
           sessionMap(channel).remove(wsUrl, old);
         }
