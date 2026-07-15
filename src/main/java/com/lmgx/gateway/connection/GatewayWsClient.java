@@ -222,8 +222,10 @@ public class GatewayWsClient {
         }
 
         WebSocketSession old = sessionOf(wsUrl, channel);
-        if (old == null || !old.isOpen()) {
-          closeQuiet(old);
+        if (old == null) {
+          return;
+        }
+        if (!old.isOpen()) {
           sessionMap(channel).remove(wsUrl, old);
         }
 
