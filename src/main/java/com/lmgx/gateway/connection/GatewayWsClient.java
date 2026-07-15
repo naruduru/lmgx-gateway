@@ -164,7 +164,7 @@ public class GatewayWsClient {
     this.targetIdByUrl = Map.copyOf(targetIdByUrl == null ? Map.of() : targetIdByUrl);
     this.connectBackoffInitialMs = Math.max(1L, connectBackoffInitialMs);
     this.connectBackoffMaxMs = Math.max(this.connectBackoffInitialMs, connectBackoffMaxMs);
-    this.connectBackoffMultiplier = connectBackoffMultiplier < 1.0d ? 1.0d : connectBackoffMultiplier;
+    this.connectBackoffMultiplier = Math.max(connectBackoffMultiplier, 1.0d);
   }
 
   public void connect(String wsUrl) {
