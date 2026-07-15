@@ -48,32 +48,18 @@ public class FailoverLoop {
   private volatile String active;
   private final String sourceIp;
 
-  // 장애 전환 이벤트 로그에 남길 실패 관측 카운터다.
-  private int failCount = 0;
   // 복구/우선순위 복귀 후보가 연속으로 정상 확인된 횟수다.
   private int recoverStable = 0;
 
   // 복구/우선순위 복귀 대상이 이 횟수만큼 연속 정상일 때 실제 전환한다.
   private static final int RECOVER_STABLE_THRESHOLD = 5;
-  // 현재 active 타겟이 업무 불가로 관측되어도 즉시 재연결하지 않고 기다리는 횟수다.
-  private static final int NOT_READY_THRESHOLD = 3;
-  // 같은 타겟에 대해 chat/email 전체 재연결을 반복하지 않기 위한 cooldown이다.
-  private static final long SAME_TARGET_RECONNECT_COOLDOWN_MS = 60_000L;
-  // 모든 타겟 소켓 연결 유지를 다시 시도하는 주기다.
+  // 모든 타겟 소켓 연결 상태를 다시 점검하는 주기다.
   private static final long ENSURE_INTERVAL_MS = 10_000L;
   // DB 헬스 상태를 모든 타겟 기준으로 갱신하는 주기다.
   private static final long ALL_TARGET_HEALTHCHECK_INTERVAL_MS = 5_000L;
   // standby 타겟 heartbeat 확인을 제한하는 타겟별 최소 간격이다.
   private static final long STANDBY_HEALTHCHECK_INTERVAL_MS = 5_000L;
 
-  // 현재 active 타겟이 연속으로 업무 불가 상태였던 횟수다.
-  private int notReadyStreak = 0;
-  // chat 채널을 마지막으로 강제 재연결한 시각이다.
-  private volatile long lastChatReconnectAt = 0L;
-  // email 채널을 마지막으로 강제 재연결한 시각이다.
-  private volatile long lastEmailReconnectAt = 0L;
-  // 같은 타겟의 chat/email 전체 재연결을 마지막으로 시도한 시각이다.
-  private volatile long lastSameTargetReconnectAt = 0L;
   // 전체 타겟 연결 유지 작업을 마지막으로 수행한 시각이다.
   private volatile long lastEnsureAt = 0L;
   // 전체 타겟 헬스체크를 마지막으로 수행한 시각이다.
@@ -153,7 +139,6 @@ public class FailoverLoop {
 
       if (controlStore.isPaused()) {
         // 인스턴스 pause는 로컬 차단 스위치이므로 resume 전까지 모든 소켓을 닫는다.
-        notReadyStreak = 0;
         ws.disconnectAll();
         return;
       }
@@ -171,62 +156,32 @@ public class FailoverLoop {
       }
 
       // 업무 command는 chat/email 두 채널과 타겟 HA active 상태가 모두 필요하다.
-      boolean chatOk = checkAndRepairChannel(active, MessageSender.Channel.CHAT, now);
-      boolean emailOk = checkAndRepairChannel(active, MessageSender.Channel.EMAIL, now);
+      boolean chatOk = checkAndRepairChannel(active, MessageSender.Channel.CHAT);
+      boolean emailOk = checkAndRepairChannel(active, MessageSender.Channel.EMAIL);
       boolean haActive = ws.isHaActive(active);
       log.debug("tick: group={}, active={}, chatOk={}, emailOk={}, haActive={}",
           activeGroup, active, chatOk, emailOk, haActive);
 
       if (!(chatOk && emailOk && haActive)) {
-        notReadyStreak++;
-        log.warn("target not command-routable observed: group={}, active={}, streak={}, haState={}, wsState={}",
-            activeGroup, active, notReadyStreak, ws.haStateOf(active), ws.readinessDebug());
+        log.warn("target not command-routable observed: group={}, active={}, haState={}, wsState={}",
+            activeGroup, active, ws.haStateOf(active), ws.readinessDebug());
 
         // 연결은 됐지만 standby인 타겟에 업무 command가 가지 않도록 ring을 즉시 탐색한다.
         String found = findFirstCommandRoutableInRing(activeGroup, active);
         if (found != null) {
           if (!found.equals(active)) {
-            notReadyStreak = 0;
             switchTo(found, haActive ? "NOT_READY_RING_SCAN" : "HA_STANDBY_RING_SCAN");
           } else {
-            if (notReadyStreak < NOT_READY_THRESHOLD) {
-              log.info("target not command-routable yet, waiting threshold: active={}, streak={}/{}, haState={}",
-                  active, notReadyStreak, NOT_READY_THRESHOLD, ws.haStateOf(active));
-            } else {
-              if (!haActive) {
-                log.info("target heartbeat alive but standby, holding connections: active={}, haState={}, streak={}",
-                    active, ws.haStateOf(active), notReadyStreak);
-              } else if (shouldReconnectSameTarget(now)) {
-                log.info("target not ready but alive, keeping existing sessions and rechecking later: {}, streak={}, wsState={}",
-                    active, notReadyStreak, ws.readinessDebug());
-                ws.connect(active);
-                lastSameTargetReconnectAt = now;
-              } else {
-                log.info("target not ready but same-target reconnect cooldown active: active={}, waitMs={}",
-                    active, sameTargetReconnectCooldownLeft(now));
-              }
-              notReadyStreak = 0;
-            }
+            log.info("target remains routable on current active, keeping route: active={}, haState={}, wsState={}",
+                active, ws.haStateOf(active), ws.readinessDebug());
           }
         } else {
-          notReadyStreak = 0;
-          if (haActive && shouldReconnectSameTarget(now)) {
-            log.warn("No command-routable target found in ring, keeping existing sessions on current: {}", active);
-            ws.connect(active);
-            lastSameTargetReconnectAt = now;
-          } else if (haActive) {
-            log.warn("No command-routable target found in ring, same-target reconnect cooldown active: active={}, waitMs={}",
-                active, sameTargetReconnectCooldownLeft(now));
-          } else {
-            log.warn("No command-routable target found in ring, waiting for HA active target: group={}, active={}, haState={}",
-                activeGroup, active, ws.haStateOf(active));
-          }
+          log.warn("No command-routable target found in ring, keeping current route and waiting for recovery: group={}, active={}, haState={}, wsState={}",
+              activeGroup, active, ws.haStateOf(active), ws.readinessDebug());
         }
         return;
       }
 
-      notReadyStreak = 0;
-      failCount = 0;
       updateHealthStatus(active, true);
 
       if (!(chatOk && emailOk)) {
@@ -312,9 +267,8 @@ public class FailoverLoop {
         id, url, chatUp, emailUp, ws.haStateOf(url), commandRoutable);
   }
 
-  // 장애/복구 판단에 쓰는 연속 카운터들을 초기화한다.
+  // 복구 판단에 쓰는 연속 카운터를 초기화한다.
   private void resetCounters() {
-    failCount = 0;
     recoverStable = 0;
   }
 
@@ -375,7 +329,6 @@ public class FailoverLoop {
     ev.toUrl = toUrl;
     ev.eventKind = eventKind;
     ev.triggerReason = reason;
-    ev.failCount = failCount;
     ev.recoverStable = recoverStable;
 
     safeInsertEvent(ev);
@@ -443,8 +396,8 @@ public class FailoverLoop {
     return routable;
   }
 
-  // 현재 active 타겟의 특정 채널을 heartbeat로 확인하고 필요하면 비강제 연결을 시도한다.
-  private boolean checkAndRepairChannel(String url, MessageSender.Channel channel, long now) {
+  // 현재 active 타겟의 특정 채널을 heartbeat로 확인한다.
+  private boolean checkAndRepairChannel(String url, MessageSender.Channel channel) {
     if (url == null) {
       return false;
     }
@@ -457,24 +410,8 @@ public class FailoverLoop {
         return true;
       }
     }
-
-    long lastReconnectAt = channel == MessageSender.Channel.CHAT ? lastChatReconnectAt : lastEmailReconnectAt;
-    long cooldownLeft = SAME_TARGET_RECONNECT_COOLDOWN_MS - (now - lastReconnectAt);
-    if (cooldownLeft > 0) {
-      log.info("{} not ready but cooldown active: active={}, waitMs={}",
-          channel.name().toLowerCase(), url, cooldownLeft);
-      return false;
-    }
-
     log.warn("{} not ready observed: active={}, wsState={}",
         channel.name().toLowerCase(), url, ws.readinessDebug());
-    if (channel == MessageSender.Channel.CHAT) {
-      ws.connectChat(url);
-      lastChatReconnectAt = now;
-    } else {
-      ws.connectEmail(url);
-      lastEmailReconnectAt = now;
-    }
     return false;
   }
 
@@ -482,7 +419,7 @@ public class FailoverLoop {
   private boolean evaluateChannelAvailability(String url, MessageSender.Channel channel) {
     boolean open = channel == MessageSender.Channel.CHAT ? ws.isChatOpen(url) : ws.isEmailOpen(url);
     if (!open) {
-      // 수동 확인 중에도 재연결을 걸어 backup 타겟이 빠르게 업무 가능 상태가 되게 한다.
+      // 수동 확인 중에도 연결을 시도해 backup 타겟이 빠르게 준비 상태가 되게 한다.
       if (channel == MessageSender.Channel.CHAT) {
         ws.connectChat(url);
       } else {
@@ -557,16 +494,6 @@ public class FailoverLoop {
     int i = url.lastIndexOf('/');
     if (i < 0 || i == url.length() - 1) return null;
     return url.substring(i + 1);
-  }
-
-  // 같은 타겟에 대한 전체 재연결 cooldown이 끝났는지 확인한다.
-  private boolean shouldReconnectSameTarget(long now) {
-    return sameTargetReconnectCooldownLeft(now) <= 0;
-  }
-
-  // 같은 타겟에 대한 전체 재연결 cooldown 남은 시간을 계산한다.
-  private long sameTargetReconnectCooldownLeft(long now) {
-    return SAME_TARGET_RECONNECT_COOLDOWN_MS - (now - lastSameTargetReconnectAt);
   }
 
   // standby 타겟 헬스체크를 너무 자주 하지 않도록 타겟별 주기를 제한한다.

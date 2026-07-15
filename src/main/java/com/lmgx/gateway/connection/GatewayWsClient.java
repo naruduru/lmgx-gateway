@@ -124,7 +124,7 @@ public class GatewayWsClient {
     }
   }
 
-  // 지정한 타겟/채널 조합에 대해 WebSocket 연결을 비동기로 생성하거나 재생성한다.
+  // 지정한 타겟/채널 조합에 대해 WebSocket 연결을 비동기로 시도한다.
   private void connectChannelInternal(String wsUrl, MessageSender.Channel channel) {
     if (wsUrl == null || wsUrl.isBlank() || channel == null) {
       return;
@@ -183,7 +183,7 @@ public class GatewayWsClient {
     });
   }
 
-  // 연속 연결 실패 횟수에 따라 다음 재연결 대기 시간을 계산한다.
+  // 연속 연결 실패 횟수에 따라 다음 연결 대기 시간을 계산한다.
   private long calcBackoffMs(int failures) {
     // backoff는 타겟/채널별로 관리해 한 채널 장애가 다른 채널을 막지 않게 한다.
     if (failures <= 1 || connectBackoffMultiplier == 1.0d) {
@@ -588,7 +588,7 @@ public class GatewayWsClient {
     return map.computeIfAbsent(url, key -> new AtomicReference<>());
   }
 
-  // 재연결 backoff와 중복 연결 방지에 사용할 타겟/채널 키를 만든다.
+  // 연결 backoff와 중복 연결 방지에 사용할 타겟/채널 키를 만든다.
   private static String connectKey(String url, MessageSender.Channel channel) {
     return url + "|" + channel.name();
   }
