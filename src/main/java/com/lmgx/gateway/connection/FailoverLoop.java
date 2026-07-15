@@ -134,7 +134,8 @@ public class FailoverLoop {
     lastEnsureAt = now;
     healthcheckAllTargets(now);
     if (this.active != null) {
-      ws.connectForce(this.active);
+      ws.setCurrentUrl(this.active);
+      ws.connect(this.active);
     }
   }
 
@@ -196,9 +197,9 @@ public class FailoverLoop {
                 log.info("target heartbeat alive but standby, holding connections: active={}, haState={}, streak={}",
                     active, ws.haStateOf(active), notReadyStreak);
               } else if (shouldReconnectSameTarget(now)) {
-                log.info("target not ready but alive, reconnecting both channels: {}, streak={}, wsState={}",
+                log.info("target not ready but alive, keeping existing sessions and rechecking later: {}, streak={}, wsState={}",
                     active, notReadyStreak, ws.readinessDebug());
-                ws.connectForce(active);
+                ws.connect(active);
                 lastSameTargetReconnectAt = now;
               } else {
                 log.info("target not ready but same-target reconnect cooldown active: active={}, waitMs={}",
@@ -210,7 +211,7 @@ public class FailoverLoop {
         } else {
           notReadyStreak = 0;
           if (haActive && shouldReconnectSameTarget(now)) {
-            log.warn("No command-routable target found in ring, reconnecting both channels on current: {}", active);
+            log.warn("No command-routable target found in ring, keeping existing sessions on current: {}", active);
             ws.connect(active);
             lastSameTargetReconnectAt = now;
           } else if (haActive) {
@@ -362,8 +363,9 @@ public class FailoverLoop {
     log.info("switch: {} -> {} (kind={}, reason={})", fromUrl, toUrl, eventKind, reason);
 
     this.active = toUrl;
-    // 새로 선택된 업무 타겟에 대해 chat/email 두 채널을 강제로 준비한다.
-    ws.connectForce(toUrl);
+    // 라우팅 대상만 교체하고, 기존 세션은 닫지 않는다.
+    ws.setCurrentUrl(toUrl);
+    ws.connect(toUrl);
 
     FailoverEventLog ev = new FailoverEventLog();
     ev.serverGroup = activeGroup;

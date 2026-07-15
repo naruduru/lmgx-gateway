@@ -211,6 +211,9 @@ public class GatewayWsClient {
   }
 
   public String currentUrl() { return currentUrl; }
+  public void setCurrentUrl(String wsUrl) {
+    this.currentUrl = wsUrl;
+  }
   public String sourceIp() { return sourceIp; }
   public String targetIdOf(String url) { return url == null ? null : targetIdByUrl.get(url); }
 
