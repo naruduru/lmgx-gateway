@@ -11,6 +11,14 @@
 
 ## 현재 동작 요약
 
+### 0. 빈 등록 방식
+
+현재 `GatewayWsClient`는 `@Component`로 스프링이 직접 생성한다.
+`GatewayBeans`는 `ProbeWsClient`, `TargetToggleStore`, `InstanceControlStore`만 등록한다.
+
+- `GatewayWsClient` 참조: [GatewayWsClient.java](../../src/main/java/com/lmgx/gateway/connection/GatewayWsClient.java:26)
+- `GatewayBeans` 참조: [GatewayBeans.java](../../src/main/java/com/lmgx/gateway/config/GatewayBeans.java:1)
+
 ### 1. 초기 연결
 
 애플리케이션 시작 시 설정된 모든 타겟에 대해 chat/email 세션 연결을 시도한다. 현재 active 타겟이 있으면 그 값을 `currentUrl`과 라우팅 기준으로 설정한 뒤 연결을 유지한다.
@@ -63,10 +71,12 @@
    - `disconnectAll()`이 전체 세션을 닫는다.
 3. 중복/오래된 세션 정리
    - 같은 타겟/채널에 새 세션이 정상적으로 열리면 이전 참조를 정리한다.
+4. 연결 실패 후 동일 타겟/채널을 다시 연결하는 경우
+   - 현재는 `connect()` 경로만 남아 있어서, 세션이 실제로 끊어진 뒤에만 다시 열린다.
 
-- `disconnectAll()` 참조: [GatewayWsClient.java](../../src/main/java/com/lmgx/gateway/connection/GatewayWsClient.java:284)
-- 세션 close 콜백 참조: [GatewayWsClient.java](../../src/main/java/com/lmgx/gateway/connection/GatewayWsClient.java:394)
-- 중복 세션 정리 참조: [GatewayWsClient.java](../../src/main/java/com/lmgx/gateway/connection/GatewayWsClient.java:157)
+- `disconnectAll()` 참조: [GatewayWsClient.java](../../src/main/java/com/lmgx/gateway/connection/GatewayWsClient.java:351)
+- 세션 close 콜백 참조: [GatewayWsClient.java](../../src/main/java/com/lmgx/gateway/connection/GatewayWsClient.java:461)
+- 중복 세션 정리 참조: [GatewayWsClient.java](../../src/main/java/com/lmgx/gateway/connection/GatewayWsClient.java:224)
 
 ## 요구사항 적합성 검토
 
@@ -80,8 +90,6 @@
 ### 주의할 부분
 
 - pause는 의도적으로 전체 세션을 닫는다. 운영 제어용 예외다.
-- 세션이 끊긴 뒤에는 같은 타겟/채널에 대해 다시 연결을 시도한다.
-  이때 새 세션이 생기므로, 엄밀히는 “절대 재연결 없음”은 아니다.
 - `ensureAllTargetConnections()`는 모든 설정 타겟의 세션을 계속 준비 상태로 두는 동작이다.
 
 - 백업 연결 유지 참조: [FailoverLoop.java](../../src/main/java/com/lmgx/gateway/connection/FailoverLoop.java:237)
