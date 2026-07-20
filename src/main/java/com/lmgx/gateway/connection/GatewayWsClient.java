@@ -233,7 +233,8 @@ public class GatewayWsClient {
           WebSocketSession opened = open(wsUrl, channelType(channel), pendingRef, channel);
           WebSocketSession previous = sessionMap(channel).put(wsUrl, opened);
           if (previous != null && previous != opened) {
-            closeQuiet(previous);
+            log.warn("unexpected previous session remains: url={}, channel={}, previousSessionId={}, openedSessionId={}",
+                wsUrl, channel, previous.getId(), opened.getId());
           }
           connectFailures.computeIfAbsent(key, k -> new AtomicInteger()).set(0);
           nextConnectAllowedAt.put(key, 0L);
@@ -347,29 +348,6 @@ public class GatewayWsClient {
     return lastPingOk || pingFailures.get() < PING_FAIL_THRESHOLD;
   }
 
-  public void disconnectAll() {
-    // 인스턴스 pause 시 사용한다. 세션과 대기 중인 heartbeat를 함께 정리한다.
-    for (WebSocketSession session : chatSessions.values()) {
-      closeQuiet(session);
-    }
-    for (WebSocketSession session : emailSessions.values()) {
-      closeQuiet(session);
-    }
-    chatSessions.clear();
-    emailSessions.clear();
-    haStates.clear();
-    pendingChat.values().forEach(ref -> ref.set(null));
-    pendingEmail.values().forEach(ref -> ref.set(null));
-  }
-
-  public void disconnectChat(String url) {
-    disconnectChannel(url, MessageSender.Channel.CHAT);
-  }
-
-  public void disconnectEmail(String url) {
-    disconnectChannel(url, MessageSender.Channel.EMAIL);
-  }
-
   public boolean pingChat() {
     return pingChat(currentUrl);
   }
@@ -460,6 +438,7 @@ public class GatewayWsClient {
       public void afterConnectionClosed(WebSocketSession session, org.springframework.web.socket.CloseStatus status) {
         log.warn("ws closed: type={}, sessionId={}, url={}, code={}, reason={}, readyState={}",
             type, session.getId(), url, status.getCode(), status.getReason(), readinessDebug());
+        cleanupSession(url, channel, session);
       }
 
       @Override
@@ -467,6 +446,7 @@ public class GatewayWsClient {
         String sessionId = session != null ? session.getId() : "null";
         log.warn("ws transport error: type={}, sessionId={}, url={}, cause={}, readyState={}",
             type, sessionId, url, describe(exception), readinessDebug(), exception);
+        cleanupSession(url, channel, session);
       }
 
       @Override
@@ -623,14 +603,14 @@ public class GatewayWsClient {
     return session != null && session.isOpen();
   }
 
-  // 특정 타겟/채널 세션을 닫고 대기 중인 heartbeat 상태를 정리한다.
-  private void disconnectChannel(String url, MessageSender.Channel channel) {
-    if (url == null) {
+  // 닫힌 세션의 내부 참조만 정리하고 세션 close는 호출하지 않는다.
+  private void cleanupSession(String url, MessageSender.Channel channel, WebSocketSession session) {
+    if (url == null || channel == null || session == null) {
       return;
     }
-    WebSocketSession session = sessionMap(channel).remove(url);
-    closeQuiet(session);
+    sessionMap(channel).remove(url, session);
     pendingRefOf(url, channel).set(null);
+    connectingChannels.remove(connectKey(url, channel));
   }
 
   // 특정 타겟/채널에 해당하는 현재 WebSocket 세션을 반환한다.
@@ -733,10 +713,4 @@ public class GatewayWsClient {
     return cur.getClass().getName() + ": " + msg;
   }
 
-  // 세션 종료 실패가 상위 흐름에 영향을 주지 않도록 조용히 닫는다.
-  private static void closeQuiet(WebSocketSession s) {
-    if (s != null && s.isOpen()) {
-      try { s.close(); } catch (Exception ignore) {}
-    }
-  }
 }

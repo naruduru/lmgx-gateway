@@ -138,8 +138,7 @@ public class FailoverLoop {
       lastTickAt = now;
 
       if (controlStore.isPaused()) {
-        // 인스턴스 pause는 로컬 차단 스위치이므로 resume 전까지 모든 소켓을 닫는다.
-        ws.disconnectAll();
+        // 인스턴스 pause는 로컬 차단 스위치로만 처리하고 타겟 세션은 직접 닫지 않는다.
         return;
       }
 
