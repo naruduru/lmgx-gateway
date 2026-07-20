@@ -254,6 +254,9 @@ public class FailoverLoop {
     if (url == null || url.isBlank()) {
       return;
     }
+    if (url.equals(active)) {
+      return;
+    }
 
     // standby 타겟은 제한된 주기로 ping하지만 DB 상태는 업무 불가로 기록한다.
     boolean haActive = ws.isHaActive(url);
