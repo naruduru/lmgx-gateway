@@ -319,7 +319,6 @@ public class FailoverLoop {
     this.active = toUrl;
     // 라우팅 대상만 교체하고, 기존 세션은 닫지 않는다.
     ws.setCurrentUrl(toUrl);
-    ws.connect(toUrl);
 
     FailoverEventLog ev = new FailoverEventLog();
     ev.serverGroup = activeGroup;
@@ -419,12 +418,6 @@ public class FailoverLoop {
   private boolean evaluateChannelAvailability(String url, MessageSender.Channel channel) {
     boolean open = channel == MessageSender.Channel.CHAT ? ws.isChatOpen(url) : ws.isEmailOpen(url);
     if (!open) {
-      // 수동 확인 중에도 연결을 시도해 backup 타겟이 빠르게 준비 상태가 되게 한다.
-      if (channel == MessageSender.Channel.CHAT) {
-        ws.connectChat(url);
-      } else {
-        ws.connectEmail(url);
-      }
       return false;
     }
     return channel == MessageSender.Channel.CHAT ? ws.pingChat(url) : ws.pingEmail(url);

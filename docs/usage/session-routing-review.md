@@ -46,7 +46,7 @@
 
 - `active`를 새 타겟으로 교체한다.
 - `GatewayWsClient.currentUrl`도 새 타겟으로 바꾼다.
-- `connect(toUrl)`만 호출해서 필요한 세션이 없을 때만 새로 연다.
+- route 전환 중에는 새 세션을 만들지 않는다.
 - 기존에 열려 있던 다른 타겟 세션은 닫지 않는다.
 
 - 참조: [FailoverLoop.java](../../src/main/java/com/lmgx/gateway/connection/FailoverLoop.java:311), [FailoverLoop.java](../../src/main/java/com/lmgx/gateway/connection/FailoverLoop.java:319)
@@ -84,6 +84,7 @@
 
 - ping/pong 실패가 곧바로 세션 종료로 이어지지 않는다.
 - 라우팅 전환은 기존 세션을 유지한 채 active 포인터만 바꾸는 방식이다.
+- route 후보 탐색 중에는 세션이 없는 타겟에 새 연결을 만들지 않는다.
 - 우선순위와 그룹 복귀 로직은 그대로 동작한다.
 - backup 타겟도 미리 열어두고, 필요할 때 그 세션을 재사용할 수 있다.
 
