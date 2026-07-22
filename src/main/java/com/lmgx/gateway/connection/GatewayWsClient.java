@@ -74,7 +74,7 @@ public class GatewayWsClient {
   private final AtomicInteger pingFailures = new AtomicInteger(0);
 
   // 마지막 heartbeat 결과가 이 시간보다 오래되면 현재 ping 상태를 오래된 값으로 본다.
-  private static final long PING_STALE_MS = 5000;
+  private static final long PING_STALE_MS = 15000;
   // heartbeat 실패가 이 횟수 이상 누적되면 현재 타겟 ping 상태를 불량으로 본다.
   private static final int PING_FAIL_THRESHOLD = 3;
   // 타겟 init 메시지에 HBPeriod가 없을 때 사용할 기본 heartbeat 주기다.
@@ -470,7 +470,6 @@ public class GatewayWsClient {
               hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
               int peerHaState = readInt(msg, "HaState", DEFAULT_HA_STATE);
               haStates.put(url, peerHaState);
-              recordHeartbeatAck(url, channel);
               log.debug("init recv: hbPeriodSec={}, peerHaState={}, localHaState={}, type={}",
                   hbPeriodSec, peerHaState, localHaState, type);
               if (!sendJson(session, Map.of(
@@ -538,6 +537,7 @@ public class GatewayWsClient {
       if (pendingAt != null) {
         long pendingAge = System.currentTimeMillis() - pendingAt;
         if (pendingAge > ackTimeoutMs) {
+          pendingMap(channel).remove(url, pendingAt);
           log.warn("heartbeat ack pending timeout: command=4 not received within {}ms, type={}, url={}, pendingAgeMs={}",
               ackTimeoutMs, type, url, pendingAge);
           return false;
@@ -545,15 +545,17 @@ public class GatewayWsClient {
         log.debug("heartbeat ack still pending: type={}, url={}, pendingAgeMs={}", type, url, pendingAge);
         return true;
       }
+      long pendingSince = System.currentTimeMillis();
+      pendingMap(channel).put(url, pendingSince);
       log.debug("hb send: command=3, type={}, localHaState={}, url={}", type, localHaState, url);
       if (!sendJson(session, Map.of(
           "Command", 3,
           // heartbeat도 우리 local 상태를 보낸다. 타겟 상태는 command=4 응답에서 읽는다.
           "HaState", localHaState
       ))) {
+        pendingMap(channel).remove(url, pendingSince);
         throw new IllegalStateException("session closed while sending heartbeat");
       }
-      pendingMap(channel).put(url, System.currentTimeMillis());
       log.debug("hb sent: command=3, type={}, url={}", type, url);
       return true;
     } catch (Exception e) {

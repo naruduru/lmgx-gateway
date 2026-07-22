@@ -276,7 +276,7 @@ public class FailoverLoop {
 
   public synchronized String ensureCommandTarget(MessageSender.Channel channel) {
     String current = this.active;
-    if (ws.isCommandRoutable(current)) {
+    if (isCommandRoutableAndLog(current)) {
       return current;
     }
 
