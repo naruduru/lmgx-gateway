@@ -533,9 +533,10 @@ public class GatewayWsClient {
       if (session == null || !session.isOpen()) {
         return false;
       }
-      Long pendingAt = pendingMap(channel).get(url);
+      long pendingSince = System.currentTimeMillis();
+      Long pendingAt = pendingMap(channel).putIfAbsent(url, pendingSince);
       if (pendingAt != null) {
-        long pendingAge = System.currentTimeMillis() - pendingAt;
+        long pendingAge = pendingSince - pendingAt;
         if (pendingAge > ackTimeoutMs) {
           pendingMap(channel).remove(url, pendingAt);
           log.warn("heartbeat ack pending timeout: command=4 not received within {}ms, type={}, url={}, pendingAgeMs={}",
@@ -545,8 +546,6 @@ public class GatewayWsClient {
         log.debug("heartbeat ack still pending: type={}, url={}, pendingAgeMs={}", type, url, pendingAge);
         return true;
       }
-      long pendingSince = System.currentTimeMillis();
-      pendingMap(channel).put(url, pendingSince);
       log.debug("hb send: command=3, type={}, localHaState={}, url={}", type, localHaState, url);
       if (!sendJson(session, Map.of(
           "Command", 3,

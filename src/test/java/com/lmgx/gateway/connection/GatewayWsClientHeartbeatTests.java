@@ -9,6 +9,9 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -54,6 +57,36 @@ class GatewayWsClientHeartbeatTests {
     assertThat(client.pingChat(URL)).isTrue();
     assertThat(pendingMap(client, MessageSender.Channel.CHAT)).doesNotContainKey(URL);
     assertThat(ackMap(client, MessageSender.Channel.CHAT)).containsKey(URL);
+  }
+
+  @Test
+  void concurrentPingsSendOnlyOneHeartbeatWhileAckIsPending() throws Exception {
+    GatewayWsClient client = newClient(1000);
+    WebSocketSession session = openSession();
+    sessionMap(client, MessageSender.Channel.CHAT).put(URL, session);
+    client.setCurrentUrl(URL);
+
+    CountDownLatch sendStarted = new CountDownLatch(1);
+    CountDownLatch releaseSend = new CountDownLatch(1);
+    AtomicInteger sendCount = new AtomicInteger();
+    doAnswer(invocation -> {
+      sendCount.incrementAndGet();
+      sendStarted.countDown();
+      assertThat(releaseSend.await(1, TimeUnit.SECONDS)).isTrue();
+      return null;
+    }).when(session).sendMessage(any(TextMessage.class));
+
+    Thread first = new Thread(() -> client.pingChat(URL), "first-ping");
+    first.start();
+    assertThat(sendStarted.await(1, TimeUnit.SECONDS)).isTrue();
+
+    assertThat(client.pingChat(URL)).isFalse();
+
+    releaseSend.countDown();
+    first.join(1000);
+
+    assertThat(sendCount.get()).isEqualTo(1);
+    assertThat(pendingMap(client, MessageSender.Channel.CHAT)).containsKey(URL);
   }
 
   @Test
