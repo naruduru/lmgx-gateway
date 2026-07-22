@@ -74,7 +74,7 @@ public class GatewayWsClient {
   private final AtomicInteger pingFailures = new AtomicInteger(0);
 
   // 마지막 heartbeat 결과가 이 시간보다 오래되면 현재 ping 상태를 오래된 값으로 본다.
-  private static final long PING_STALE_MS = 15000;
+  private static final long PING_STALE_MS = 12000;
   // heartbeat 실패가 이 횟수 이상 누적되면 현재 타겟 ping 상태를 불량으로 본다.
   private static final int PING_FAIL_THRESHOLD = 3;
   // 타겟 init 메시지에 HBPeriod가 없을 때 사용할 기본 heartbeat 주기다.
