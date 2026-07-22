@@ -67,7 +67,7 @@ gateway:
     G2: A1,A2
 
   ws:
-    ack-timeout-ms: 3000
+    ack-timeout-ms: 7000
 ```
 
 로컬/개발처럼 일부 타겟만 쓰는 경우:

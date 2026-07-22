@@ -60,7 +60,7 @@ gateway:
     G2: A1,A2
 
   ws:
-    ack-timeout-ms: 3000
+    ack-timeout-ms: 7000
 ```
 
 로컬/개발에서 일부만 사용할 때:
