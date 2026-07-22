@@ -127,11 +127,11 @@ public class FailoverLoop {
 
   private volatile long lastTickAt = 0L;
 
-  @Scheduled(fixedDelay = 1000)
+  @Scheduled(fixedDelay = 5000)
   public void tick() {
     try {
       long now = System.currentTimeMillis();
-      long interval = 1000;
+      long interval = 5000;
       if (now - lastTickAt < interval) {
         return;
       }

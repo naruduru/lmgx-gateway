@@ -25,9 +25,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 @Component
 public class GatewayWsClient {
@@ -49,10 +47,14 @@ public class GatewayWsClient {
   private final ConcurrentMap<String, WebSocketSession> chatSessions = new ConcurrentHashMap<>();
   // 타겟 URL별 email 채널 WebSocket 세션 저장소다.
   private final ConcurrentMap<String, WebSocketSession> emailSessions = new ConcurrentHashMap<>();
-  // 타겟 URL별 chat heartbeat 응답 대기 상태다.
-  private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingChat = new ConcurrentHashMap<>();
-  // 타겟 URL별 email heartbeat 응답 대기 상태다.
-  private final ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> pendingEmail = new ConcurrentHashMap<>();
+  // 타겟 URL별 chat heartbeat ACK 마지막 수신 시각이다.
+  private final ConcurrentMap<String, Long> lastChatAckAt = new ConcurrentHashMap<>();
+  // 타겟 URL별 email heartbeat ACK 마지막 수신 시각이다.
+  private final ConcurrentMap<String, Long> lastEmailAckAt = new ConcurrentHashMap<>();
+  // 타겟 URL별 chat heartbeat 요청 후 ACK 대기 시작 시각이다.
+  private final ConcurrentMap<String, Long> pendingChatSinceAt = new ConcurrentHashMap<>();
+  // 타겟 URL별 email heartbeat 요청 후 ACK 대기 시작 시각이다.
+  private final ConcurrentMap<String, Long> pendingEmailSinceAt = new ConcurrentHashMap<>();
   // 타겟 URL별 peer HA 상태값이다. 1은 active, 2는 standby다.
   private final ConcurrentMap<String, Integer> haStates = new ConcurrentHashMap<>();
   // 타겟/채널별 다음 연결 재시도 가능 시각이다.
@@ -228,9 +230,8 @@ public class GatewayWsClient {
 
         try {
           log.info("connect: url={}, channel={}", wsUrl, channel);
-          AtomicReference<CompletableFuture<Void>> pendingRef = pendingRefOf(wsUrl, channel);
           // 타겟 handshake 프로토콜에서는 CHAT은 C, EMAIL은 I로 보낸다.
-          WebSocketSession opened = open(wsUrl, channelType(channel), pendingRef, channel);
+          WebSocketSession opened = open(wsUrl, channelType(channel), channel);
           WebSocketSession previous = sessionMap(channel).put(wsUrl, opened);
           if (previous != null && previous != opened) {
             log.warn("unexpected previous session remains: url={}, channel={}, previousSessionId={}, openedSessionId={}",
@@ -284,7 +285,11 @@ public class GatewayWsClient {
         + ", currentHaState=" + haStateOf(currentUrl)
         + ", lastPingOk=" + lastPingOk
         + ", pingFailures=" + pingFailures.get()
-        + ", pingAgeMs=" + age;
+        + ", pingAgeMs=" + age
+        + ", chatAckAgeMs=" + heartbeatAckAgeMs(currentUrl, MessageSender.Channel.CHAT)
+        + ", emailAckAgeMs=" + heartbeatAckAgeMs(currentUrl, MessageSender.Channel.EMAIL)
+        + ", chatPendingAgeMs=" + heartbeatPendingAgeMs(currentUrl, MessageSender.Channel.CHAT)
+        + ", emailPendingAgeMs=" + heartbeatPendingAgeMs(currentUrl, MessageSender.Channel.EMAIL);
   }
 
   public boolean isChatOpen() { return isChatOpen(currentUrl); }
@@ -361,20 +366,24 @@ public class GatewayWsClient {
   }
 
   public boolean pingChat(String url) {
-    boolean ok = pingChannel(url, MessageSender.Channel.CHAT);
+    boolean sendable = pingChannel(url, MessageSender.Channel.CHAT);
+    boolean ok = sendable && isHeartbeatAckHealthy(url, MessageSender.Channel.CHAT);
     updatePingStateFor(url, ok && isEmailOpen(url));
     return ok;
   }
 
   public boolean pingEmail(String url) {
-    boolean ok = pingChannel(url, MessageSender.Channel.EMAIL);
+    boolean sendable = pingChannel(url, MessageSender.Channel.EMAIL);
+    boolean ok = sendable && isHeartbeatAckHealthy(url, MessageSender.Channel.EMAIL);
     updatePingStateFor(url, ok && isChatOpen(url));
     return ok;
   }
 
   public boolean pingBoth(String url) {
-    boolean chatOk = pingChannel(url, MessageSender.Channel.CHAT);
-    boolean emailOk = pingChannel(url, MessageSender.Channel.EMAIL);
+    boolean chatSendable = pingChannel(url, MessageSender.Channel.CHAT);
+    boolean emailSendable = pingChannel(url, MessageSender.Channel.EMAIL);
+    boolean chatOk = chatSendable && isHeartbeatAckHealthy(url, MessageSender.Channel.CHAT);
+    boolean emailOk = emailSendable && isHeartbeatAckHealthy(url, MessageSender.Channel.EMAIL);
     boolean ok = chatOk && emailOk;
     updatePingStateFor(url, ok);
     log.debug("ping both: url={}, chatOk={}, emailOk={}, overallOk={}", url, chatOk, emailOk, ok);
@@ -423,9 +432,7 @@ public class GatewayWsClient {
   }
 
   // 타겟 WebSocket을 열고 command=1 init 수신 및 command=2 응답까지 완료한다.
-  private WebSocketSession open(String url, String type,
-                                AtomicReference<CompletableFuture<Void>> pendingRef,
-                                MessageSender.Channel channel) {
+  private WebSocketSession open(String url, String type, MessageSender.Channel channel) {
     CompletableFuture<Void> initDone = new CompletableFuture<>();
 
     WebSocketHandler h = new TextWebSocketHandler() {
@@ -463,6 +470,7 @@ public class GatewayWsClient {
               hbPeriodSec = readInt(msg, "HBPeriod", DEFAULT_HB_PERIOD_SEC);
               int peerHaState = readInt(msg, "HaState", DEFAULT_HA_STATE);
               haStates.put(url, peerHaState);
+              recordHeartbeatAck(url, channel);
               log.debug("init recv: hbPeriodSec={}, peerHaState={}, localHaState={}, type={}",
                   hbPeriodSec, peerHaState, localHaState, type);
               if (!sendJson(session, Map.of(
@@ -491,10 +499,7 @@ public class GatewayWsClient {
             Object nodeRole1 = msg.getOrDefault("NodeRole1", msg.get("nodeRole1"));
             Object nodeRole2 = msg.getOrDefault("NodeRole2", msg.get("nodeRole2"));
             log.debug("heartbeat ack: type={}, haState={}, nodeRole1={}, nodeRole2={}", type, ackHaState, nodeRole1, nodeRole2);
-            CompletableFuture<Void> hb = pendingRef.getAndSet(null);
-            if (hb != null && !hb.isDone()) {
-              hb.complete(null);
-            }
+            recordHeartbeatAck(url, channel);
             return;
           }
 
@@ -518,29 +523,27 @@ public class GatewayWsClient {
     }
   }
 
-  // 채널별 세션과 heartbeat 대기 객체를 찾아 ping을 수행한다.
+  // 채널별 세션을 찾아 heartbeat 송신을 시도한다.
   private boolean pingChannel(String url, MessageSender.Channel channel) {
-    return pingSession(
-        sessionOf(url, channel),
-        pendingRefOf(url, channel),
-        channelType(channel),
-        url
-    );
+    return pingSession(sessionOf(url, channel), channelType(channel), url, channel);
   }
 
-  // command=3 heartbeat를 보내고 command=4 응답을 ackTimeout 안에 기다린다.
-  private boolean pingSession(WebSocketSession session,
-                              AtomicReference<CompletableFuture<Void>> pendingRef,
-                              String type,
-                              String url) {
+  // command=4 ACK 대기 중이면 같은 세션에 command=3을 중복 송신하지 않는다.
+  private boolean pingSession(WebSocketSession session, String type, String url, MessageSender.Channel channel) {
     try {
       if (session == null || !session.isOpen()) {
         return false;
       }
-      CompletableFuture<Void> hb = new CompletableFuture<>();
-      if (!pendingRef.compareAndSet(null, hb)) {
-        log.debug("heartbeat already pending: type={}, url={}", type, url);
-        return false;
+      Long pendingAt = pendingMap(channel).get(url);
+      if (pendingAt != null) {
+        long pendingAge = System.currentTimeMillis() - pendingAt;
+        if (pendingAge > ackTimeoutMs) {
+          log.warn("heartbeat ack pending timeout: command=4 not received within {}ms, type={}, url={}, pendingAgeMs={}",
+              ackTimeoutMs, type, url, pendingAge);
+          return false;
+        }
+        log.debug("heartbeat ack still pending: type={}, url={}, pendingAgeMs={}", type, url, pendingAge);
+        return true;
       }
       log.debug("hb send: command=3, type={}, localHaState={}, url={}", type, localHaState, url);
       if (!sendJson(session, Map.of(
@@ -550,17 +553,12 @@ public class GatewayWsClient {
       ))) {
         throw new IllegalStateException("session closed while sending heartbeat");
       }
+      pendingMap(channel).put(url, System.currentTimeMillis());
       log.debug("hb sent: command=3, type={}, url={}", type, url);
-      hb.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
       return true;
-    } catch (TimeoutException e) {
-      log.warn("heartbeat timeout waiting command=4 after {}ms, type={}, url={}", ackTimeoutMs, type, url);
-      return false;
     } catch (Exception e) {
       log.debug("ping session failed: type={}, url={}, cause={}", type, url, e.getMessage());
       return false;
-    } finally {
-      pendingRef.set(null);
     }
   }
 
@@ -609,8 +607,60 @@ public class GatewayWsClient {
       return;
     }
     sessionMap(channel).remove(url, session);
-    pendingRefOf(url, channel).set(null);
+    ackMap(channel).remove(url);
+    pendingMap(channel).remove(url);
     connectingChannels.remove(connectKey(url, channel));
+  }
+
+  // heartbeat ACK를 받은 시각을 채널별로 기록한다.
+  private void recordHeartbeatAck(String url, MessageSender.Channel channel) {
+    if (url == null || channel == null) {
+      return;
+    }
+    ackMap(channel).put(url, System.currentTimeMillis());
+    pendingMap(channel).remove(url);
+  }
+
+  // 최근 command=4 ACK가 설정된 timeout 안에 들어왔는지 확인한다.
+  private boolean isHeartbeatAckHealthy(String url, MessageSender.Channel channel) {
+    if (url == null || channel == null) {
+      return false;
+    }
+    Long ackAt = ackMap(channel).get(url);
+    if (ackAt == null) {
+      return false;
+    }
+    long age = System.currentTimeMillis() - ackAt;
+    boolean healthy = age <= ackTimeoutMs;
+    if (!healthy) {
+      log.warn("heartbeat ack stale: command=4 not received within {}ms, channel={}, url={}, ackAgeMs={}",
+          ackTimeoutMs, channel, url, age);
+    }
+    return healthy;
+  }
+
+  // 마지막 heartbeat ACK 이후 경과 시간을 로그와 상태 문자열에 표시한다.
+  private long heartbeatAckAgeMs(String url, MessageSender.Channel channel) {
+    if (url == null || channel == null) {
+      return -1L;
+    }
+    Long ackAt = ackMap(channel).get(url);
+    if (ackAt == null) {
+      return -1L;
+    }
+    return System.currentTimeMillis() - ackAt;
+  }
+
+  // heartbeat 요청 후 ACK 대기 경과 시간을 로그와 상태 문자열에 표시한다.
+  private long heartbeatPendingAgeMs(String url, MessageSender.Channel channel) {
+    if (url == null || channel == null) {
+      return -1L;
+    }
+    Long pendingAt = pendingMap(channel).get(url);
+    if (pendingAt == null) {
+      return -1L;
+    }
+    return System.currentTimeMillis() - pendingAt;
   }
 
   // 특정 타겟/채널에 해당하는 현재 WebSocket 세션을 반환한다.
@@ -626,12 +676,14 @@ public class GatewayWsClient {
     return channel == MessageSender.Channel.CHAT ? chatSessions : emailSessions;
   }
 
-  // 채널 종류에 맞는 heartbeat 대기 저장소를 선택하고 없으면 생성한다.
-  private AtomicReference<CompletableFuture<Void>> pendingRefOf(String url, MessageSender.Channel channel) {
-    ConcurrentMap<String, AtomicReference<CompletableFuture<Void>>> map =
-        channel == MessageSender.Channel.CHAT ? pendingChat : pendingEmail;
-    // 타겟/채널별 heartbeat는 한 번에 하나만 대기할 수 있다.
-    return map.computeIfAbsent(url, key -> new AtomicReference<>());
+  // 채널 종류에 맞는 heartbeat ACK 시각 저장소를 선택한다.
+  private ConcurrentMap<String, Long> ackMap(MessageSender.Channel channel) {
+    return channel == MessageSender.Channel.CHAT ? lastChatAckAt : lastEmailAckAt;
+  }
+
+  // 채널 종류에 맞는 heartbeat ACK 대기 시각 저장소를 선택한다.
+  private ConcurrentMap<String, Long> pendingMap(MessageSender.Channel channel) {
+    return channel == MessageSender.Channel.CHAT ? pendingChatSinceAt : pendingEmailSinceAt;
   }
 
   // 연결 backoff와 중복 연결 방지에 사용할 타겟/채널 키를 만든다.

@@ -31,7 +31,7 @@ gateway:
     G2: A1,A2
   ws:
     # ACK timeout for WS requests (ms)
-    ack-timeout-ms: 3000
+    ack-timeout-ms: 10000
     backoff:
       initial-ms: 5000
       max-ms: 1800000
