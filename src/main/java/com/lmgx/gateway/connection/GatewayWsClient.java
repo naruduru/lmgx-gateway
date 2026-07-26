@@ -82,6 +82,29 @@ public class GatewayWsClient {
   // HA 상태값이 없을 때는 active로 보는 기본값이다.
   private static final int DEFAULT_HA_STATE = 1;
 
+  private enum HeartbeatResult {
+    SEND_FAILED(false, false),
+    ACK_PENDING(true, false),
+    ACK_OK(true, true),
+    ACK_TIMEOUT(false, false);
+
+    private final boolean acceptable;
+    private final boolean ackConfirmed;
+
+    HeartbeatResult(boolean acceptable, boolean ackConfirmed) {
+      this.acceptable = acceptable;
+      this.ackConfirmed = ackConfirmed;
+    }
+
+    boolean acceptable() {
+      return acceptable;
+    }
+
+    boolean ackConfirmed() {
+      return ackConfirmed;
+    }
+  }
+
   // 타겟이 init에서 알려준 heartbeat 주기다.
   private volatile int hbPeriodSec = DEFAULT_HB_PERIOD_SEC;
   // 이 게이트웨이 인스턴스가 타겟에 광고할 local HA 상태다.
@@ -286,6 +309,8 @@ public class GatewayWsClient {
         + ", lastPingOk=" + lastPingOk
         + ", pingFailures=" + pingFailures.get()
         + ", pingAgeMs=" + age
+        + ", chatHeartbeatState=" + heartbeatStateOf(currentUrl, MessageSender.Channel.CHAT)
+        + ", emailHeartbeatState=" + heartbeatStateOf(currentUrl, MessageSender.Channel.EMAIL)
         + ", chatAckAgeMs=" + heartbeatAckAgeMs(currentUrl, MessageSender.Channel.CHAT)
         + ", emailAckAgeMs=" + heartbeatAckAgeMs(currentUrl, MessageSender.Channel.EMAIL)
         + ", chatPendingAgeMs=" + heartbeatPendingAgeMs(currentUrl, MessageSender.Channel.CHAT)
@@ -366,27 +391,23 @@ public class GatewayWsClient {
   }
 
   public boolean pingChat(String url) {
-    boolean sendable = pingChannel(url, MessageSender.Channel.CHAT);
-    boolean ok = sendable && isHeartbeatAckHealthy(url, MessageSender.Channel.CHAT);
-    updatePingStateFor(url, ok && isEmailOpen(url));
-    return ok;
+    HeartbeatResult result = checkHeartbeat(url, MessageSender.Channel.CHAT);
+    updatePingStateFor(url, result, isEmailOpen(url));
+    return result.acceptable();
   }
 
   public boolean pingEmail(String url) {
-    boolean sendable = pingChannel(url, MessageSender.Channel.EMAIL);
-    boolean ok = sendable && isHeartbeatAckHealthy(url, MessageSender.Channel.EMAIL);
-    updatePingStateFor(url, ok && isChatOpen(url));
-    return ok;
+    HeartbeatResult result = checkHeartbeat(url, MessageSender.Channel.EMAIL);
+    updatePingStateFor(url, result, isChatOpen(url));
+    return result.acceptable();
   }
 
   public boolean pingBoth(String url) {
-    boolean chatSendable = pingChannel(url, MessageSender.Channel.CHAT);
-    boolean emailSendable = pingChannel(url, MessageSender.Channel.EMAIL);
-    boolean chatOk = chatSendable && isHeartbeatAckHealthy(url, MessageSender.Channel.CHAT);
-    boolean emailOk = emailSendable && isHeartbeatAckHealthy(url, MessageSender.Channel.EMAIL);
-    boolean ok = chatOk && emailOk;
-    updatePingStateFor(url, ok);
-    log.debug("ping both: url={}, chatOk={}, emailOk={}, overallOk={}", url, chatOk, emailOk, ok);
+    HeartbeatResult chatResult = checkHeartbeat(url, MessageSender.Channel.CHAT);
+    HeartbeatResult emailResult = checkHeartbeat(url, MessageSender.Channel.EMAIL);
+    boolean ok = chatResult.acceptable() && emailResult.acceptable();
+    updatePingStateFor(url, chatResult, emailResult);
+    log.debug("ping both: url={}, chatResult={}, emailResult={}, overallOk={}", url, chatResult, emailResult, ok);
     return ok;
   }
 
@@ -522,16 +543,16 @@ public class GatewayWsClient {
     }
   }
 
-  // 채널별 세션을 찾아 heartbeat 송신을 시도한다.
-  private boolean pingChannel(String url, MessageSender.Channel channel) {
+  // 채널별 세션을 찾아 heartbeat 송신 및 ACK 상태 확인을 시도한다.
+  private HeartbeatResult pingChannel(String url, MessageSender.Channel channel) {
     return pingSession(sessionOf(url, channel), channelType(channel), url, channel);
   }
 
   // command=4 ACK 대기 중이면 같은 세션에 command=3을 중복 송신하지 않는다.
-  private boolean pingSession(WebSocketSession session, String type, String url, MessageSender.Channel channel) {
+  private HeartbeatResult pingSession(WebSocketSession session, String type, String url, MessageSender.Channel channel) {
     try {
       if (session == null || !session.isOpen()) {
-        return false;
+        return HeartbeatResult.SEND_FAILED;
       }
       long pendingSince = System.currentTimeMillis();
       Long pendingAt = pendingMap(channel).putIfAbsent(url, pendingSince);
@@ -541,10 +562,10 @@ public class GatewayWsClient {
           pendingMap(channel).remove(url, pendingAt);
           log.warn("heartbeat ack pending timeout: command=4 not received within {}ms, type={}, url={}, pendingAgeMs={}",
               ackTimeoutMs, type, url, pendingAge);
-          return false;
+          return HeartbeatResult.ACK_TIMEOUT;
         }
         log.debug("heartbeat ack still pending: type={}, url={}, pendingAgeMs={}", type, url, pendingAge);
-        return true;
+        return HeartbeatResult.ACK_PENDING;
       }
       log.debug("hb send: command=3, type={}, localHaState={}, url={}", type, localHaState, url);
       if (!sendJson(session, Map.of(
@@ -556,18 +577,42 @@ public class GatewayWsClient {
         throw new IllegalStateException("session closed while sending heartbeat");
       }
       log.debug("hb sent: command=3, type={}, url={}", type, url);
-      return true;
+      return heartbeatStateOf(url, channel, true);
     } catch (Exception e) {
       log.debug("ping session failed: type={}, url={}, cause={}", type, url, e.getMessage());
-      return false;
+      return HeartbeatResult.SEND_FAILED;
     }
+  }
+
+  // heartbeat 송신과 ACK 상태 확인을 한 번에 수행한다.
+  private HeartbeatResult checkHeartbeat(String url, MessageSender.Channel channel) {
+    return pingChannel(url, channel);
+  }
+
+  // 현재 업무 타겟에 대한 마지막 ping 결과와 실패 횟수를 갱신한다.
+  private void updatePingStateFor(String url, HeartbeatResult result, boolean peerChannelOpen) {
+    if (url == null || !url.equals(currentUrl)) {
+      return;
+    }
+    if (result == HeartbeatResult.ACK_PENDING) {
+      return;
+    }
+    updatePingStateFor(url, result.ackConfirmed() && peerChannelOpen);
+  }
+
+  // 현재 업무 타겟에 대한 마지막 ping 결과와 실패 횟수를 갱신한다.
+  private void updatePingStateFor(String url, HeartbeatResult chatResult, HeartbeatResult emailResult) {
+    if (url == null || !url.equals(currentUrl)) {
+      return;
+    }
+    if (chatResult == HeartbeatResult.ACK_PENDING || emailResult == HeartbeatResult.ACK_PENDING) {
+      return;
+    }
+    updatePingStateFor(url, chatResult.ackConfirmed() && emailResult.ackConfirmed());
   }
 
   // 현재 업무 타겟에 대한 마지막 ping 결과와 실패 횟수를 갱신한다.
   private void updatePingStateFor(String url, boolean ok) {
-    if (url == null || !url.equals(currentUrl)) {
-      return;
-    }
     // 전역 ping 상태는 현재 업무 타겟에 대해서만 갱신한다.
     lastPingOk = ok;
     lastPingAt = System.currentTimeMillis();
@@ -622,30 +667,36 @@ public class GatewayWsClient {
     pendingMap(channel).remove(url);
   }
 
-  // 최근 command=4 ACK가 설정된 timeout 안에 들어왔거나, 아직 timeout 전 ACK 대기 중인지 확인한다.
-  private boolean isHeartbeatAckHealthy(String url, MessageSender.Channel channel) {
+  // 최근 command=4 ACK가 설정된 timeout 안에 들어왔는지, 아직 timeout 전 ACK 대기 중인지 확인한다.
+  private HeartbeatResult heartbeatStateOf(String url, MessageSender.Channel channel) {
+    return heartbeatStateOf(url, channel, false);
+  }
+
+  // 최근 command=4 ACK가 설정된 timeout 안에 들어왔는지, 아직 timeout 전 ACK 대기 중인지 확인한다.
+  private HeartbeatResult heartbeatStateOf(String url, MessageSender.Channel channel, boolean logStale) {
     if (url == null || channel == null) {
-      return false;
+      return HeartbeatResult.SEND_FAILED;
     }
     Long pendingAt = pendingMap(channel).get(url);
     if (pendingAt != null) {
       long pendingAge = System.currentTimeMillis() - pendingAt;
       if (pendingAge <= ackTimeoutMs) {
         log.debug("heartbeat ack pending within timeout: channel={}, url={}, pendingAgeMs={}", channel, url, pendingAge);
-        return true;
+        return HeartbeatResult.ACK_PENDING;
       }
+      return HeartbeatResult.ACK_TIMEOUT;
     }
     Long ackAt = ackMap(channel).get(url);
     if (ackAt == null) {
-      return false;
+      return HeartbeatResult.SEND_FAILED;
     }
     long age = System.currentTimeMillis() - ackAt;
     boolean healthy = age <= ackTimeoutMs;
-    if (!healthy) {
+    if (!healthy && logStale) {
       log.warn("heartbeat ack stale: command=4 not received within {}ms, channel={}, url={}, ackAgeMs={}",
           ackTimeoutMs, channel, url, age);
     }
-    return healthy;
+    return healthy ? HeartbeatResult.ACK_OK : HeartbeatResult.ACK_TIMEOUT;
   }
 
   // 마지막 heartbeat ACK 이후 경과 시간을 로그와 상태 문자열에 표시한다.

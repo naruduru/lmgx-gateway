@@ -33,6 +33,8 @@ class GatewayWsClientHeartbeatTests {
 
     assertThat(client.pingChat(URL)).isTrue();
     assertThat(pendingMap(client, MessageSender.Channel.CHAT)).containsKey(URL);
+    assertThat(client.lastPingOk()).isFalse();
+    assertThat(client.lastPingAt()).isZero();
 
     Thread.sleep(20);
 
