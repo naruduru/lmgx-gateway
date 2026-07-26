@@ -31,7 +31,7 @@ class GatewayWsClientHeartbeatTests {
     sessionMap(client, MessageSender.Channel.CHAT).put(URL, session);
     client.setCurrentUrl(URL);
 
-    assertThat(client.pingChat(URL)).isFalse();
+    assertThat(client.pingChat(URL)).isTrue();
     assertThat(pendingMap(client, MessageSender.Channel.CHAT)).containsKey(URL);
 
     Thread.sleep(20);
@@ -80,7 +80,7 @@ class GatewayWsClientHeartbeatTests {
     first.start();
     assertThat(sendStarted.await(1, TimeUnit.SECONDS)).isTrue();
 
-    assertThat(client.pingChat(URL)).isFalse();
+    assertThat(client.pingChat(URL)).isTrue();
 
     releaseSend.countDown();
     first.join(1000);

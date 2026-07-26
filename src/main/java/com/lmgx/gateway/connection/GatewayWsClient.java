@@ -622,10 +622,18 @@ public class GatewayWsClient {
     pendingMap(channel).remove(url);
   }
 
-  // 최근 command=4 ACK가 설정된 timeout 안에 들어왔는지 확인한다.
+  // 최근 command=4 ACK가 설정된 timeout 안에 들어왔거나, 아직 timeout 전 ACK 대기 중인지 확인한다.
   private boolean isHeartbeatAckHealthy(String url, MessageSender.Channel channel) {
     if (url == null || channel == null) {
       return false;
+    }
+    Long pendingAt = pendingMap(channel).get(url);
+    if (pendingAt != null) {
+      long pendingAge = System.currentTimeMillis() - pendingAt;
+      if (pendingAge <= ackTimeoutMs) {
+        log.debug("heartbeat ack pending within timeout: channel={}, url={}, pendingAgeMs={}", channel, url, pendingAge);
+        return true;
+      }
     }
     Long ackAt = ackMap(channel).get(url);
     if (ackAt == null) {
