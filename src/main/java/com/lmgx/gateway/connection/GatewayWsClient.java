@@ -564,7 +564,8 @@ public class GatewayWsClient {
               ackTimeoutMs, type, url, pendingAge);
           return HeartbeatResult.ACK_TIMEOUT;
         }
-        log.debug("heartbeat ack still pending: type={}, url={}, pendingAgeMs={}", type, url, pendingAge);
+        log.debug("heartbeat check skipped duplicate command=3 while waiting command=4: type={}, url={}, pendingAgeMs={}",
+            type, url, pendingAge);
         return HeartbeatResult.ACK_PENDING;
       }
       log.debug("hb send: command=3, type={}, localHaState={}, url={}", type, localHaState, url);
@@ -681,7 +682,8 @@ public class GatewayWsClient {
     if (pendingAt != null) {
       long pendingAge = System.currentTimeMillis() - pendingAt;
       if (pendingAge <= ackTimeoutMs) {
-        log.debug("heartbeat ack pending within timeout: channel={}, url={}, pendingAgeMs={}", channel, url, pendingAge);
+        log.debug("heartbeat waiting for command=4 within timeout: channel={}, url={}, pendingAgeMs={}",
+            channel, url, pendingAge);
         return HeartbeatResult.ACK_PENDING;
       }
       return HeartbeatResult.ACK_TIMEOUT;
