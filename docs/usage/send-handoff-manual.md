@@ -120,7 +120,130 @@ heartbeat는 send의 전제 조건을 확인하는 용도다.
 - 세션을 실제로 닫는 주체는 보통 상대 타겟 시스템 또는 transport error다.
 - send 실패와 session close는 분리해서 봐야 한다.
 
-## 8. 장애 시 확인 순서
+## 8. 주요 설정값
+
+아래 값들은 실제 send 라우팅과 heartbeat 동작에 직접 영향을 준다.
+
+### `gateway.targets.*`
+
+타겟 서버 WebSocket URL이다.
+
+- `gateway.targets.U1`
+- `gateway.targets.U2`
+- `gateway.targets.A1`
+- `gateway.targets.A2`
+
+예시:
+
+```properties
+gateway.targets.U1=ws://10.0.0.11/clientws/U1
+gateway.targets.U2=ws://10.0.0.12/clientws/U2
+gateway.targets.A1=ws://10.0.0.21/clientws/A1
+gateway.targets.A2=ws://10.0.0.22/clientws/A2
+```
+
+### `gateway.ring.*`
+
+장애 전환 시 탐색할 순서다.
+
+- `gateway.ring.G1`
+- `gateway.ring.G2`
+
+기본값:
+
+- `G1`: `U1,U2,A1,A2`
+- `G2`: `A1,A2,U1,U2`
+
+### `gateway.recover.*`
+
+복구 대상으로 볼 타겟 순서다.
+
+- `gateway.recover.G1`
+- `gateway.recover.G2`
+
+기본값:
+
+- `G1`: `U1,U2`
+- `G2`: `A1,A2`
+
+### `gateway.prefer.*`
+
+우선 복귀 대상 순서다.
+
+- `gateway.prefer.G1`
+- `gateway.prefer.G2`
+
+기본값:
+
+- `G1`: `U1,U2`
+- `G2`: `A1,A2`
+
+### `gateway.recover.enabled`
+
+- 기본값: `true`
+- 반대 그룹 복구를 허용할지 여부다.
+
+### `gateway.prefer.enabled`
+
+- 기본값: `true`
+- 더 높은 우선순위 타겟으로 복귀할지 여부다.
+
+### `gateway.group.override`
+
+- 기본값: `G1`
+- 초기 active 그룹을 강제로 지정한다.
+
+### `gateway.ws.ack-timeout-ms`
+
+- 기본값: `1000`
+- heartbeat `command=4` ACK를 기다리는 시간이다.
+
+### `gateway.ws.ha-state`
+
+- 기본값: `1`
+- 이 게이트웨이 인스턴스의 로컬 HA 상태다.
+
+### `gateway.source-ip`
+
+- 기본값: 현재 호스트 IP
+- health status 저장 시 사용하는 source IP다.
+
+### `gateway.ws.backoff.initial-ms`
+
+- 기본값: `5000`
+- WebSocket 연결 실패 후 첫 재시도 지연 시간이다.
+
+### `gateway.ws.backoff.max-ms`
+
+- 기본값: `1800000`
+- WebSocket 재시도 최대 지연 시간이다.
+
+### `gateway.ws.backoff.multiplier`
+
+- 기본값: `2.0`
+- 연속 실패 시 backoff 배수다.
+
+### `gateway.uq.serialized-chat-commands`
+
+- 기본값: `1045`
+- chat에서 직렬화가 필요한 command 목록이다.
+
+### `gateway.uq.response-timeout-ms`
+
+- 기본값: `300000`
+- request tracker 응답 대기 시간이다.
+
+### `gateway.uq.session-inflight-ttl-ms`
+
+- 기본값: `300000`
+- chat serialized request의 in-flight 보관 시간이다.
+
+### `gateway.uq.session-key-fields`
+
+- 기본값: `UCID,ucid,SessionId,sessionId,SESSION_ID,ChatId,chatId,CHAT_ID,RoomId,roomId,ROOM_ID,UserId,userId,USER_ID,CallingUserId,callingUserId`
+- 세션 직렬화 키를 찾을 때 보는 필드 목록이다.
+
+## 9. 장애 시 확인 순서
 
 send 장애가 나면 아래 순서로 본다.
 
@@ -130,7 +253,7 @@ send 장애가 나면 아래 순서로 본다.
 4. `GatewayWsClient.readinessDebug()`를 확인한다.
 5. `afterConnectionClosed(...)` 또는 `handleTransportError(...)`가 있었는지 확인한다.
 
-## 9. 자주 보는 로그
+## 10. 자주 보는 로그
 
 ### 타겟 선택 로그
 
@@ -151,7 +274,7 @@ send 장애가 나면 아래 순서로 본다.
 - `heartbeat timeout waiting command=4 ...`
 - `heartbeat ack: ...`
 
-## 10. 운영 체크리스트
+## 11. 운영 체크리스트
 
 - 서비스 코드는 `GatewayWsClient`를 직접 호출하지 않고 `UqSender`를 사용한다.
 - send 전에 `Command` 값이 숫자인지 확인한다.
@@ -159,11 +282,10 @@ send 장애가 나면 아래 순서로 본다.
 - active 타겟과 standby 타겟을 구분한다.
 - heartbeat timeout과 session close를 같은 문제로 보지 않는다.
 
-## 11. 정리
+## 12. 정리
 
 send 경로의 핵심은 다음 한 줄로 정리된다.
 
 > `UqSender`가 payload를 정리하고, `GatewayMessageSender`가 타겟을 고른 뒤, `GatewayWsClient`가 실제 전송을 수행한다.
 
 장애 분석은 항상 이 순서로 좁혀서 보면 된다.
-
